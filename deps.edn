@@ -58,7 +58,7 @@
 
  :tasks {dist  {:doc "package target/Almaz.app (macOS arm64)" :task (shell "jolt" "native/tools/package_macos.clj")}
          ;; `run` is also a jolt built-in; this one is the app
-         run   {:doc "the app" :task (jolt "-M:run") :override-builtin true}
+         run   {:doc "the app (files to open may follow)" :task (apply jolt "-M:run" *command-line-args*) :override-builtin true}
          native {:doc "fetch LibRaw + BUI into .deps/ and build every native library"
                  ;; in-process: a fresh `jolt script` would refuse to start while
                  ;; the libraries it's about to build are missing
