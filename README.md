@@ -125,28 +125,30 @@ test/almaz/             clojure.test suites (pure + native)
 
 ## Build
 
-```sh
-# BUI kit (see glimmer-bui's README), then:
-native/img/build.sh           # needs libjpeg, libpng, libtiff (brew install jpeg-turbo libpng libtiff)
-native/onnxruntime/build.sh   # needs `brew install onnxruntime`
-native/raw/build.sh           # needs LibRaw, below
-native/coreml/build.sh        # optional (our own Core ML shim; needs Xcode)
-```
-
-**glimmer-bui**: `deps.edn` points at a local checkout
-(`../jlt-commons/glimmer-bui`, branch `props-diff-events`), which fixes the
-flicker/jitter (props are diffed on re-render instead of re-applied, which
-relaid the whole UI and snapped sliders back mid-drag), passes pointer
-positions to raw events, routes panel children into the panel body, and adds
-layout/colour props, canvas items and the file dialog. Switch back to a git
-coordinate once that branch is merged.
-
-**LibRaw** (the 202611 snapshot, with the Nikon HE decoder):
+With jolt (and on macOS, Homebrew) installed:
 
 ```sh
-git clone --depth 1 https://github.com/LibRaw/LibRaw ~/src/libraw
-cd ~/src/libraw && make -f Makefile.dist -j8 library   # lib/libraw_r.a
+jolt native     # build every native library (below)
+jolt run        # the app
+jolt test       # all suites
+jolt check      # load every namespace
+jolt samples    # fetch the RAW test files
 ```
+
+`jolt native` installs whichever of `cmake jpeg-turbo libpng libtiff
+onnxruntime` Homebrew is missing, fetches LibRaw (the 202611 snapshot, with the
+Nikon HE decoder) and the BUI kit into `.deps/` at the commits CI pins, builds
+them, then runs each `native/*/build.sh`. Rerunning it only rebuilds our shims.
+`deps.edn` lists `.deps/bui/lib/libbui.*` for glimmer-bui, so no
+`DYLD_LIBRARY_PATH` is needed. On Linux, install the apt packages from
+`.github/workflows/ci.yml` first and set `ONNXRUNTIME_INC`/`ONNXRUNTIME_LIB`
+to the ONNX Runtime release tarball to build that shim.
+
+`deps.edn` pins a glimmer-bui commit that diffs props on re-render instead of
+re-applying them (which relaid the whole UI and snapped sliders back
+mid-drag), passes pointer positions to raw events, routes panel children into
+the panel body, and adds layout/colour props, canvas items and the file
+dialog.
 
 ## Models
 
