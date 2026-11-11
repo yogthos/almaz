@@ -70,10 +70,13 @@
    after them,
    in darktable's order: tone, levels, colour balance, hue and saturation,
    selective colour, black & white, then the vignette over the result).
-   :tab is where its panel lives, :params its settings' defaults. A :live
+   :tab is where its panel lives, :params its settings' defaults, :opacity
+   the strength it starts at when switched on by hand (else full). A :live
    kind is computed as it is drawn (no processing, no pixels of its own)."
-  {:denoise   {:label "Denoise" :order 0 :tab :enhance :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
-   :sharpen   {:label "Sharpen" :order 1 :tab :enhance :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
+  {:denoise   {:label "Denoise" :order 0 :tab :enhance :opacity 0.5
+               :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
+   :sharpen   {:label "Sharpen" :order 1 :tab :enhance :opacity 0.5
+               :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
    ;; the Repair brush: its mask is what to repair (empty to start), filled
    ;; from the surroundings (almaz.engine/repair!)
    :repair    {:label "Repair" :order 2 :tab :enhance :mask-input true :mask-fill 0.0 :feather 3.0
@@ -86,6 +89,12 @@
    :selective {:label "Selective Color" :order 7 :tab :color :live true :params (colour-params :selective)}
    :bw        {:label "Black & White" :order 8 :tab :color :live true :params (colour-params :bw)}
    :vignette  {:label "Vignette" :order 9 :tab :color :live true :params (colour-params :vignette)}})
+
+(defn default-opacity
+  "The strength a `kind` layer starts at: full strength is too much for the
+   AI filters, which are usually wanted partly blended."
+  [kind]
+  (get-in kinds [kind :opacity] 1.0))
 
 (defn kinds-in
   "The kinds whose panels live in `tab`, in pipeline order."
@@ -221,7 +230,8 @@
     [db (:id l)]
     (let [id (rc/next-id db :layer)]
       [(rc/insert db :layer (merge (get-in kinds [kind :params])
-                                   {:doc-id doc-id :kind kind :position (get-in kinds [kind :order])}
+                                   {:doc-id doc-id :kind kind :position (get-in kinds [kind :order])
+                                    :opacity (default-opacity kind)}
                                    (when-let [f (get-in kinds [kind :feather])] {:feather f})))
        id])))
 

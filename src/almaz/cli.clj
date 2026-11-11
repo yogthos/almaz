@@ -207,7 +207,7 @@ Results are named <input>-almaz.<ext> and keep the input's EXIF.")
                             (let [kind (flag->kind flag)]
                               (if (false? (:enabled settings))
                                 (dissoc acc kind)
-                                (assoc acc kind (apply-settings settings (get acc kind {:opacity 1.0}))))))
+                                (assoc acc kind (apply-settings settings (get acc kind {:opacity (d/default-opacity kind)}))))))
                           chosen filters)]
     (->> chosen
          (map (fn [[kind m]] (merge (get-in d/kinds [kind :params]) {:kind kind} m)))

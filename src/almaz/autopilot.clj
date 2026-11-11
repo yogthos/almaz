@@ -17,17 +17,22 @@
   [estimate]
   (> (or (:noise estimate) 0.0) noise-floor))
 
+(def ^:private max-strength
+  "Autopilot's ceiling: past this the AI filters look processed (waxy skin,
+   haloed edges); anyone who wants more can drag the slider."
+  0.6)
+
 (defn suggest
   "The layers to add, in pipeline order: [{:kind :opacity} ...]."
   [{:keys [noise sharpness]}]
   (cond-> []
     (> noise noise-floor)
     (conj {:kind :denoise
-           :opacity (clamp 0.2 1.0 (+ 0.3 (* 25.0 (- noise noise-floor))))})
+           :opacity (clamp 0.2 max-strength (+ 0.25 (* 15.0 (- noise noise-floor))))})
 
     (< sharpness soft-below)
     (conj {:kind :sharpen
-           :opacity (clamp 0.2 1.0 (+ 0.3 (/ (- soft-below sharpness) soft-below)))})))
+           :opacity (clamp 0.15 max-strength (+ 0.15 (* 0.45 (/ (- soft-below sharpness) soft-below))))})))
 
 (defn describe [{:keys [noise sharpness]}]
   (format "noise %.1f%%  sharpness %.2f" (* 100.0 noise) (double sharpness)))
