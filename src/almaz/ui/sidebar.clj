@@ -422,7 +422,7 @@
   "The doc's `kind` layer, or how it would start (off) when it has none."
   [db doc kind]
   (or (when doc (d/layer-of db (:id doc) kind))
-      (merge (get-in d/kinds [kind :params]) {:kind kind :enabled false :opacity 1.0})))
+      (merge (get-in d/kinds [kind :params]) {:kind kind :enabled false :opacity (d/default-opacity kind)})))
 
 (defn- filter-panel
   [{:keys [db doc tool sigs job stale-id] :as ctx} kind open?]

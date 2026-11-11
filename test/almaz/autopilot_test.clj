@@ -11,13 +11,14 @@
           hi (first (ap/suggest {:noise 0.04 :sharpness 0.9}))]
       (is (= :denoise (:kind lo) (:kind hi)))
       (is (< (:opacity lo) (:opacity hi)))
-      (is (<= (:opacity hi) 1.0))))
+      (is (<= (:opacity hi) 0.6))))
   (testing "soft images add sharpen after denoise"
     (is (= [:denoise :sharpen] (mapv :kind (ap/suggest {:noise 0.03 :sharpness 0.1}))))
     (is (= [:sharpen] (mapv :kind (ap/suggest {:noise 0.001 :sharpness 0.1})))))
-  (testing "strengths are in [0.2, 1]"
-    (doseq [s (ap/suggest {:noise 0.5 :sharpness 0.0})]
-      (is (<= 0.2 (:opacity s) 1.0)))))
+  (testing "strengths are moderate: in [0.15, 0.6], even for the worst image"
+    (doseq [est [{:noise 0.5 :sharpness 0.0} {:noise 0.0061 :sharpness 0.299}]
+            s (ap/suggest est)]
+      (is (<= 0.15 (:opacity s) 0.6)))))
 
 (deftest describe
   (is (string? (ap/describe {:noise 0.03 :sharpness 0.2}))))

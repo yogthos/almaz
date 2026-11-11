@@ -62,7 +62,7 @@
     (let [[s] (cli/plan {:override true :filters {:sharpen {:model :classic}}} noisy-soft)]
       (is (= [:sharpen] (mapv :kind (cli/plan {:override true :filters {:sharpen {}}} noisy-soft))))
       (is (= :classic (:model s)))
-      (is (= 1.0 (:opacity s)))))
+      (is (= 0.5 (:opacity s)))))
   (testing "filters stay in pipeline order whatever the flag order"
     (is (= [:denoise :sharpen] (mapv :kind (cli/plan {:override true :filters {:sharpen {} :noise {}}} {}))))))
 

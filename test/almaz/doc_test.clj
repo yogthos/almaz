@@ -45,11 +45,13 @@
     (let [[db _] (d/ensure-layer db0 1 :denoise)
           [db b] (d/ensure-layer db 1 :sharpen)]
       (is (thrown? Exception (d/update-layer db b assoc :kind :denoise)))))
-  (testing "a new layer is enabled, opaque, unmasked, needs processing, has its kind's defaults"
+  (testing "a new layer is enabled, unmasked, needs processing, has its kind's defaults"
     (let [[db id] (d/ensure-layer db0 1 :denoise)
           l (d/layer db id)]
       (is (:enabled l))
-      (is (= 1.0 (:opacity l)))
+      (is (= 0.5 (:opacity l)) "the AI filters start at half strength")
+      (is (= 1.0 (:opacity (d/layer (first (d/ensure-layer db0 1 :repair)) 1))) "the rest at full")
+      (is (= 1.0 (d/default-opacity :hsl)))
       (is (nil? (:done-sig l)))
       (is (= (get-in d/kinds [:denoise :params]) (d/params l)))))
   (testing "a layer must belong to an existing document"
@@ -91,7 +93,7 @@
         (is (= 0 (d/next-stale y 1)))
         (is (= [0 1] (d/stale-indices y 1)))))
     (testing "opacity or a mask edit leaves the layer itself valid but re-runs the ones above"
-      (is (= [1] (d/stale-indices (d/update-layer db a assoc :opacity 0.5) 1)))
+      (is (= [1] (d/stale-indices (d/update-layer db a assoc :opacity 0.3) 1)))
       (is (= [1] (d/stale-indices (d/bump-mask db a) 1))))
     (testing "the top layer's opacity invalidates nothing"
       (is (= [] (d/stale-indices (d/update-layer db b assoc :opacity 0.2) 1))))
