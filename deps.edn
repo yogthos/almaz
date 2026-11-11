@@ -37,6 +37,15 @@
                {:name "almazinfer-coreml"
                 :optional true
                 :darwin ["native/coreml/lib/libalmazinfer_coreml.dylib"]}
+               ;; glimmer-bui declares the BUI kit by bare name plus paths on
+               ;; its author's machine; this spec wins over its by :name, so
+               ;; the copy `jolt native` builds into .deps/ is found first
+               ;; without DYLD_LIBRARY_PATH. :optional so the headless tests
+               ;; still run without it.
+               {:name "bui"
+                :optional true
+                :darwin [".deps/bui/lib/libbui.dylib" "libbui.dylib"]
+                :linux  [".deps/bui/lib/libbui.so" "libbui.so"]}
                {:name "almazinfer-raw"
                 :optional true
                 :darwin ["native/raw/lib/libalmazinfer_raw.dylib"]
@@ -50,5 +59,10 @@
  :tasks {dist  {:doc "package target/Almaz.app (macOS arm64)" :task (shell "jolt" "native/tools/package_macos.clj")}
          ;; `run` is also a jolt built-in; this one is the app
          run   {:doc "the app" :task (jolt "-M:run") :override-builtin true}
+         native {:doc "fetch LibRaw + BUI into .deps/ and build every native library"
+                 ;; in-process: a fresh `jolt script` would refuse to start while
+                 ;; the libraries it's about to build are missing
+                 :task (load-file "native/tools/build_native.clj")}
+         samples {:doc "fetch the RAW test files" :task (shell "native/tools/fetch_samples.sh")}
          check "jolt -M:check"
          test  "jolt -M:test"}}

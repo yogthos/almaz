@@ -58,6 +58,7 @@ exec \"$here/almaz-bin\" \"$@\"
   []
   (or (some #(when (and % (exists? %)) %)
             [(System/getenv "BUI_LIB")
+             ".deps/bui/lib/libbui.dylib"
              (str (System/getenv "HOME") "/src/bui-src/lib/libbui.dylib")
              (str (System/getenv "HOME") "/src/jlt-commons/glimmer-bui/lib/libbui.dylib")])
       (throw (ex-info "libbui.dylib not found; set BUI_LIB" {}))))
