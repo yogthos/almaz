@@ -75,10 +75,10 @@ index a8ef667..8bf90a7 100644
  int bk_custom_event(BKNode *n, BKCustomEvent *e, int wx, int wy);
  void bk_custom_frames(BKContext *ctx);       /* BK_render: frame callbacks due */
 diff --git a/kit/intern/kit_widgets.c b/kit/intern/kit_widgets.c
-index 737f2ab..bd4b390 100644
+index 737f2ab..30a58ef 100644
 --- a/kit/intern/kit_widgets.c
 +++ b/kit/intern/kit_widgets.c
-@@ -1239,6 +1239,11 @@ static int scroll_drag(BKNode *n, BKEvent *e)
+@@ -1239,9 +1239,16 @@ static int scroll_drag(BKNode *n, BKEvent *e)
    return 1;
  }
  
@@ -89,9 +89,15 @@ index 737f2ab..bd4b390 100644
 +
  static int scroll_wheel(BKNode *n, BKEvent *e)
  {
-   if (EV_CTRL(e)) {
+-  if (EV_CTRL(e)) {
++  /* Shift + wheel is horizontal (a trackpad's sideways movement arrives so):
++   * not this view's axis */
++  if (EV_CTRL(e) || EV_SHIFT(e)) {
+     return 0;
+   }
+   const int old = n->scroll;
 diff --git a/kit/intern/kit_window_cocoa.m b/kit/intern/kit_window_cocoa.m
-index 1c26c73..ac37fe5 100644
+index 1c26c73..32cdd29 100644
 --- a/kit/intern/kit_window_cocoa.m
 +++ b/kit/intern/kit_window_cocoa.m
 @@ -138,6 +138,7 @@ struct BKWindow {
@@ -111,26 +117,29 @@ index 1c26c73..ac37fe5 100644
    }
    /* 10.7+ precise deltas, in points (GHOST: scrollingDeltaX / Y) */
    CGFloat dx = [ev scrollingDeltaX], dy = [ev scrollingDeltaY];
-@@ -535,7 +536,23 @@ static CGColorSpaceRef srgb(void)
+@@ -534,8 +535,25 @@ static CGColorSpaceRef srgb(void)
+     dx *= BK_SCROLL_STEP; /* line deltas */
      dy *= BK_SCROLL_STEP;
    }
-   bk->scroll_x += dx;
+-  bk->scroll_x += dx;
 -  bk->scroll_y += dy;
 +  /* a scroll view under the pointer follows the fingers pixel for pixel and
-+   * stops at its ends; anything else gets wheel notches */
++   * stops at its ends, and a diagonal swipe's sideways part is dropped (it
++   * only scrolls vertically); anything else gets wheel notches */
 +  bk->pscroll_y += dy * bk->px;
 +  const int py = (int)bk->pscroll_y;
-+  if (dy != 0.0 && BK_scroll_pixels(bk->ctx, x, y, py, mods)) {
++  if ((dy != 0.0 || dx != 0.0) && BK_scroll_pixels(bk->ctx, x, y, py, mods)) {
 +    if (bk) {
 +      bk->pscroll_y -= py;
-+      bk->scroll_y = 0.0;
++      bk->scroll_y = bk->scroll_x = 0.0;
 +    }
-+    dy = 0.0;
++    dx = dy = 0.0;
 +  }
 +  else if (bk) {
 +    bk->pscroll_y = 0.0;
 +  }
 +  if (bk) {
++    bk->scroll_x += dx;
 +    bk->scroll_y += dy;
 +  }
    for (int i = 0; i < 8 && bk && fabs(bk->scroll_y) >= BK_SCROLL_STEP; i++) {
