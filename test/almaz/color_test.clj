@@ -183,3 +183,70 @@
     (let [p (-> (c/defaults :levels) (c/set-level :rgb :black 0.99) (c/set-level :rgb :white 0.0))]
       (is (< (:lv-rgb-black p) (:lv-rgb-white p)))
       (is (<= (:lv-rgb-black p) (:lv-rgb-grey p) (:lv-rgb-white p))))))
+
+;; ---- curves ---------------------------------------------------------------------
+(deftest curve-points
+  (testing "a channel's points as text: none is the straight line"
+    (is (= [[0.0 0.0] [1.0 1.0]] (c/parse-points "")))
+    (is (= [[0.0 0.0] [1.0 1.0]] (c/parse-points nil)))
+    (is (= [[0.0 0.1] [0.5 0.7] [1.0 0.9]] (c/parse-points "1,0.9;0,0.1;0.5,0.7")) "sorted by x")
+    (is (= [[0.0 0.0] [1.0 1.0]] (c/parse-points "junk;0.5")) "unreadable: the line")
+    (is (= [[0.0 0.0] [0.25 1.0] [1.0 1.0]] (c/parse-points "0,0;0.25,3;1,1")) "clamped to 0..1")
+    (is (= "" (c/format-points [[0.0 0.0] [1.0 1.0]])))
+    (is (= [[0.0 0.0] [0.3 0.45] [1.0 1.0]] (c/parse-points (c/format-points [[0.0 0.0] [0.3 0.45] [1.0 1.0]]))))))
+
+(deftest curve-shape
+  (let [pts [[0.0 0.0] [0.25 0.15] [0.75 0.85] [1.0 1.0]]
+        f (c/curve-fn pts)]
+    (testing "through every point"
+      (doseq [[x y] pts] (is (close? 1e-9 y (f x)))))
+    (testing "monotone points: a monotone curve, no overshoot"
+      (let [ys (map #(f (/ % 200.0)) (range 201))]
+        (is (apply <= ys))
+        (is (every? #(<= 0.0 % 1.0) ys))))
+    (testing "flat past the end points"
+      (let [g (c/curve-fn [[0.2 0.1] [0.8 0.9]])]
+        (is (close? 1e-9 0.1 (g 0.0)))
+        (is (close? 1e-9 0.9 (g 1.0)))))
+    (testing "a peak doesn't ring past its neighbours"
+      (let [g (c/curve-fn [[0.0 0.0] [0.5 1.0] [1.0 0.0]])]
+        (is (every? #(<= 0.0 (g (/ % 100.0)) 1.0) (range 101)))))))
+
+(deftest curve-editing
+  (let [line [[0.0 0.0] [1.0 1.0]]]
+    (testing "a point goes in by x"
+      (is (= [[[0.0 0.0] [0.4 0.6] [1.0 1.0]] 1] (c/add-point line 0.4 0.6))))
+    (testing "a moved point stays between its neighbours"
+      (let [pts [[0.0 0.0] [0.4 0.6] [0.7 0.8] [1.0 1.0]]
+            [_ [x y] _] (c/move-point pts 1 0.9 1.5)]
+        (is (< x 0.7))
+        (is (close? 1e-9 1.0 y))))
+    (testing "removing a point; an end point goes back to its corner"
+      (is (= line (c/remove-point [[0.0 0.0] [0.4 0.6] [1.0 1.0]] 1)))
+      (is (= [[0.0 0.0] [0.5 0.5] [1.0 1.0]] (c/remove-point [[0.1 0.2] [0.5 0.5] [1.0 1.0]] 0))))
+    (testing "the point under a click, if any"
+      (is (= 1 (c/point-near [[0.0 0.0] [0.4 0.6] [1.0 1.0]] 0.41 0.59 0.03)))
+      (is (nil? (c/point-near [[0.0 0.0] [0.4 0.6] [1.0 1.0]] 0.2 0.8 0.03))))))
+
+(deftest curves
+  (let [lift "0,0;0.5,0.7;1,1"]
+    (testing "the default curves change nothing"
+      (is (nil? (c/table :curves (c/defaults :curves)))))
+    (testing "RGB lifts every channel, as separable curves"
+      (is (rgb= 1e-6 [0.7 0.7 0.7] (apply-kind :curves {:cv-rgb lift} [0.5 0.5 0.5])))
+      (is (some? (:curves (c/table :curves (assoc (c/defaults :curves) :cv-rgb lift))))))
+    (testing "Red only red"
+      (is (rgb= 1e-6 [0.7 0.5 0.5] (apply-kind :curves {:cv-r lift} [0.5 0.5 0.5]))))
+    (testing "Luminance brightens and keeps the hue, through a colour cube"
+      (let [in [0.6 0.3 0.2]
+            out (apply-kind :curves {:cv-l lift} in)
+            [L0 a0 b0] (c/srgb->oklab in) [L1 a1 b1] (c/srgb->oklab out)]
+        (is (> L1 L0))
+        (is (close? 0.02 (Math/atan2 b0 a0) (Math/atan2 b1 a1)))
+        (is (rgb= 1e-6 [0.7 0.7 0.7] (apply-kind :curves {:cv-l lift} [0.5 0.5 0.5])))
+        (is (some? (:cube (c/table :curves (assoc (c/defaults :curves) :cv-l lift)))))))
+    (testing "wild points still give colours in range"
+      (doseq [s ["0,1;1,0" "0,0;0.01,1;0.02,0;1,1" "0.5,0.5" "0,1;1,1"]
+              ch [:cv-l :cv-rgb :cv-g]
+              rgb probe]
+        (is (every? #(and (finite? %) (<= 0.0 % 1.0)) (apply-kind :curves {ch s} rgb)) (str ch s rgb))))))

@@ -93,11 +93,12 @@
    :light     {:label "Light" :order 4 :tab :color :live true
                :params (assoc (zipmap tone-keys (repeat 0.0)) :model :classic)}
    :levels    {:label "Levels" :order 5 :tab :color :live true :params (colour-params :levels)}
-   :balance   {:label "Color Balance" :order 6 :tab :color :live true :params (colour-params :balance)}
-   :hsl       {:label "Hue & Saturation" :order 7 :tab :color :live true :params (colour-params :hsl)}
-   :selective {:label "Selective Color" :order 8 :tab :color :live true :params (colour-params :selective)}
-   :bw        {:label "Black & White" :order 9 :tab :color :live true :params (colour-params :bw)}
-   :vignette  {:label "Vignette" :order 10 :tab :color :live true :params (colour-params :vignette)}})
+   :curves    {:label "Curves" :order 6 :tab :color :live true :params (colour-params :curves)}
+   :balance   {:label "Color Balance" :order 7 :tab :color :live true :params (colour-params :balance)}
+   :hsl       {:label "Hue & Saturation" :order 8 :tab :color :live true :params (colour-params :hsl)}
+   :selective {:label "Selective Color" :order 9 :tab :color :live true :params (colour-params :selective)}
+   :bw        {:label "Black & White" :order 10 :tab :color :live true :params (colour-params :bw)}
+   :vignette  {:label "Vignette" :order 11 :tab :color :live true :params (colour-params :vignette)}})
 
 (defn default-opacity
   "The strength a `kind` layer starts at: full strength is too much for the
@@ -111,10 +112,15 @@
   (->> kinds (filter #(= tab (:tab (val %)))) (sort-by (comp :order val)) (mapv key)))
 
 (def ^:private colour-columns
-  "One real column per colour setting, its range checked."
-  (for [[_ m] (sort-by key c/settings)
-        [k [d lo hi]] (sort-by key m)]
-    [k :real :default d :check [:and [>= k lo] [<= k hi]]]))
+  "One real column per colour setting, its range checked; a text column per
+   curve channel (its points)."
+  (concat
+   (for [[_ m] (sort-by key c/settings)
+         [k [d lo hi]] (sort-by key m)]
+     [k :real :default d :check [:and [>= k lo] [<= k hi]]])
+   (for [[_ m] (sort-by key c/curve-settings)
+         [k d] (sort-by key m)]
+     [k :text :default d])))
 
 (s/create-table* :layer
   (into
@@ -200,8 +206,8 @@
 (defn colour
   "A colour adjustment layer's [kind settings] (almaz.color), or nil."
   [layer]
-  (when (contains? c/settings (:kind layer))
-    [(:kind layer) (select-keys layer (keys (c/settings (:kind layer))))]))
+  (when (contains? c/kinds (:kind layer))
+    [(:kind layer) (select-keys layer (c/setting-keys (:kind layer)))]))
 
 (defn empty-db [] (rc/create-db))
 

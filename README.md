@@ -22,11 +22,12 @@ See [PLAN.md](PLAN.md) for the target analysis and plan.
 - The sidebar has three tabs. **Enhance**: Denoise and Sharpen. **Color**:
   Light (exposure, contrast, highlights, shadows, whites, blacks, saturation,
   auto exposure), Levels (black/grey/white per channel over a histogram, with
-  pickers), Color Balance (cyan/red, magenta/green, yellow/blue, saturation
+  pickers), Curves (Luminance, RGB, Red, Green or Blue: click to add a point,
+  drag it, double-click to remove it, or pick a tone from the image), Color Balance (cyan/red, magenta/green, yellow/blue, saturation
   and brightness for shadows, midtones and highlights), Hue & Saturation (with
   vibrance), Selective Color (hue, saturation, brightness for eight hue
   bands), Black & White (channel mix, toning, intensity) and Vignette. The
-  colour maths follows darktable's modules (rgblevels, colorbalancergb,
+  colour maths follows darktable's modules (rgblevels, rgbcurve, colorbalancergb,
   colorequal, channelmixerrgb, vignette), written in Clojure (`almaz.color`)
   and drawn as 3D colour tables or per-channel curves, so the sliders respond
   as they move. **Dimensions**: rotate and flip, and crop by dragging a frame

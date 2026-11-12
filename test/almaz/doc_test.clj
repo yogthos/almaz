@@ -62,7 +62,7 @@
 
 (deftest tabs
   (is (= [:denoise :sharpen :repair :focus] (d/kinds-in :enhance)))
-  (is (= [:light :levels :balance :hsl :selective :bw :vignette] (d/kinds-in :color))))
+  (is (= [:light :levels :curves :balance :hsl :selective :bw :vignette] (d/kinds-in :color))))
 
 (deftest colour-layers
   (let [[db id] (d/ensure-layer db0 1 :balance)]

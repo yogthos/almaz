@@ -23,11 +23,15 @@
                      at constant luminance
      levels          rgblevels: black/grey/white per channel, master first
                      (the grey point maps to 0.5, as in Photoshop)
+     curves          rgbcurve: points per channel through a monotone cubic
+                     (its MONOTONE_HERMITE), RGB then each channel, then a
+                     luminance curve that scales the colour at its hue
      vignette        vignette.c: brightness through a raised-cosine falloff
      black & white   channelmixerrgb's grey mix, normalized, plus a toning
                      tint in the midtones
    Gamut: colours pushed outside sRGB lose chroma at constant lightness and
-   hue until they fit.")
+   hue until they fit."
+  (:require [clojure.string :as str]))
 
 ;; ---- colour spaces --------------------------------------------------------------
 (defn srgb->lin ^double [^double v]
@@ -116,7 +120,22 @@
    :bw {:bw-red [0.0 -1.0 1.0] :bw-green [0.0 -1.0 1.0] :bw-blue [0.0 -1.0 1.0]
         :bw-tone [0.0 -1.0 1.0] :bw-intensity [1.0 0.0 1.0]}})
 
-(defn defaults [kind] (into {} (map (fn [[k [d]]] [k d])) (settings kind)))
+;; Curves keep a list of points per channel, as text ("x,y;x,y", "" for the
+;; straight line): not numeric settings
+(def curve-channels "curves' channels, as the menu lists them" [:l :rgb :r :g :b])
+(defn cv-key [ch] (k "cv-" ch))
+(def curve-settings {:curves (into {} (for [c curve-channels] [(cv-key c) ""]))})
+
+(def kinds "Every colour adjustment kind." (into (set (keys settings)) (keys curve-settings)))
+
+(defn setting-keys "Kind `kind`'s setting keys." [kind] (keys (or (settings kind) (curve-settings kind))))
+
+(defn defaults [kind]
+  (or (curve-settings kind) (into {} (map (fn [[k [d]]] [k d])) (settings kind))))
+
+(declare parse-points)
+
+(def ^:private straight [[0.0 0.0] [1.0 1.0]])
 
 (defn- neutral?
   "Do settings `p` leave every colour as it is? (Black & white never does;
@@ -124,6 +143,7 @@
   [kind p]
   (case kind
     :bw false
+    :curves (every? #(= straight (parse-points (get p %))) (setting-keys :curves))
     :vignette (and (zero? (double (:vig-exposure p 0.0))) (zero? (double (:vig-black p 0.0))))
     (every? (fn [[k d]] (== d (double (get p k d)))) (defaults kind))))
 
@@ -297,6 +317,123 @@
                           p)))
                     p (map vector [:r :g :b] ms)))))
 
+;; ---- curves ---------------------------------------------------------------------
+(defn- parse-double* [s] (try (Double/parseDouble (str/trim s)) (catch Exception _ nil)))
+
+(defn parse-points
+  "A curve's points from their text (\"x,y;x,y\"), sorted by x, in 0..1, one
+   per x; the straight line for none, or fewer than two."
+  [s]
+  (let [pts (->> (str/split (str s) #";")
+                 (keep (fn [pair]
+                         (let [[x y & more] (map parse-double* (str/split pair #","))]
+                           (when (and x y (nil? more) (== x x) (== y y))
+                             [(clamp01 x) (clamp01 y)]))))
+                 (sort-by first)
+                 (reduce (fn [acc [x :as p]] (if (and (seq acc) (== x (first (peek acc)))) acc (conj acc p))) []))]
+    (if (< (count pts) 2) straight pts)))
+
+(defn format-points
+  "Points as text for the layer: \"\" for the straight line."
+  [pts]
+  (if (= straight (mapv (fn [[x y]] [(double x) (double y)]) pts))
+    ""
+    (str/join ";" (map (fn [[x y]] (str (/ (Math/round (* 1e4 (double x))) 1e4) ","
+                                        (/ (Math/round (* 1e4 (double y))) 1e4)))
+                       pts))))
+
+(defn- tangents
+  "Fritsch-Carlson tangents: a cubic Hermite through the points that never
+   overshoots them (darktable curve_tools' monotone hermite)."
+  [xs ys]
+  (let [n (count xs)
+        d (mapv (fn [i] (/ (- (ys (inc i)) (ys i)) (- (xs (inc i)) (xs i)))) (range (dec n)))
+        m (transient (vec (for [i (range n)]
+                            (cond (zero? i) (d 0)
+                                  (= i (dec n)) (d (- n 2))
+                                  (pos? (* (d (dec i)) (d i))) (/ (+ (d (dec i)) (d i)) 2.0)
+                                  :else 0.0))))]
+    (persistent!
+     (reduce (fn [m i]
+               (let [di (d i)]
+                 (if (zero? di)
+                   (-> m (assoc! i 0.0) (assoc! (inc i) 0.0))
+                   (let [a (/ (m i) di) b (/ (m (inc i)) di) h (+ (* a a) (* b b))]
+                     (cond (or (neg? a) (neg? b)) (-> m (assoc! i (if (neg? a) 0.0 (m i)))
+                                                      (assoc! (inc i) (if (neg? b) 0.0 (m (inc i)))))
+                           (> h 9.0) (let [t (/ 3.0 (Math/sqrt h))]
+                                       (-> m (assoc! i (* t a di)) (assoc! (inc i) (* t b di))))
+                           :else m)))))
+             m (range (dec n))))))
+
+(defn curve-fn
+  "The curve through `pts` (sorted by x) as a function of 0..1, flat past
+   its end points, in 0..1."
+  [pts]
+  (let [xs (mapv (comp double first) pts) ys (mapv (comp double second) pts)
+        n (count xs) m (tangents xs ys)
+        x0 (xs 0) xn (xs (dec n))]
+    (fn ^double [^double x]
+      (cond
+        (<= x x0) (ys 0)
+        (>= x xn) (ys (dec n))
+        :else (let [i (loop [i 0] (if (and (< i (- n 2)) (>= x (xs (inc i)))) (recur (inc i)) i))
+                    h (- (xs (inc i)) (xs i))
+                    t (/ (- x (xs i)) h) t2 (* t t) t3 (* t2 t)]
+                (clamp01 (+ (* (+ (* 2 t3) (* -3 t2) 1) (ys i))
+                            (* (+ t3 (* -2 t2) t) h (m i))
+                            (* (+ (* -2 t3) (* 3 t2)) (ys (inc i)))
+                            (* (- t3 t2) h (m (inc i))))))))))
+
+(def ^:private min-gap "Closest two points may get in x." 0.01)
+
+(defn add-point
+  "Points with [x y] put in by x: [points its index]."
+  [pts x y]
+  (let [p [(clamp01 x) (clamp01 y)]
+        i (count (take-while #(< (first %) (first p)) pts))]
+    [(vec (concat (take i pts) [p] (drop i pts))) i]))
+
+(defn move-point
+  "Point i moved to [x y], x kept between its neighbours."
+  [pts i x y]
+  (let [lo (if (pos? i) (+ (first (pts (dec i))) min-gap) 0.0)
+        hi (if (< i (dec (count pts))) (- (first (pts (inc i))) min-gap) 1.0)]
+    (assoc pts i [(max lo (min hi (clamp01 x))) (clamp01 y)])))
+
+(defn remove-point
+  "Point i gone; an end point instead goes back to its corner."
+  [pts i]
+  (let [n (count pts)]
+    (cond (zero? i) (assoc pts 0 [0.0 0.0])
+          (= i (dec n)) (assoc pts i [1.0 1.0])
+          :else (vec (concat (take i pts) (drop (inc i) pts))))))
+
+(defn point-near
+  "The index of the point within r of [x y] (nearest), or nil."
+  [pts x y r]
+  (let [[i d] (apply min-key second (map-indexed (fn [i [px py]] [i (Math/hypot (- px x) (- py y))]) pts))]
+    (when (<= d r) i)))
+
+(defn- curves-fn [p]
+  (let [f (fn [ch] (curve-fn (parse-points (get p (cv-key ch)))))
+        master (f :rgb)
+        [fr fg fb] (mapv f [:r :g :b])
+        lum (when-not (= straight (parse-points (get p (cv-key :l)))) (f :l))]
+    (fn [[r g b]]
+      (let [out [(fr (master r)) (fg (master g)) (fb (master b))]]
+        (if-not lum
+          out
+          ;; the luminance through the curve (in display encoding), the
+          ;; colour scaled to it in linear light at its hue
+          (let [lin (lin3 out)
+                Y (luminance lin)
+                Y' (srgb->lin (lum (lin->srgb Y)))]
+            (if (< Y 1e-6)
+              (let [v (lin->srgb Y')] [v v v])
+              (let [[L a bb] (lin->oklab (mapv #(* % (/ Y' Y)) lin))]
+                (mapv clamp01 (srgb3 (lch->lin L (Math/hypot a bb) (Math/atan2 bb a))))))))))))
+
 ;; ---- vignette -------------------------------------------------------------------
 (defn- vignette-curve [{:keys [vig-exposure vig-black]}]
   (fn [^double x]
@@ -348,6 +485,7 @@
       :selective (selective-fn p)
       :balance (balance-fn p)
       :levels (levels-fn p)
+      :curves (curves-fn p)
       :vignette (vignette-fn p)
       :bw (bw-fn p))))
 
@@ -387,14 +525,15 @@
 (defn- build-table [kind p]
   (when-not (neutral? kind p)
     (let [f (transform kind p)]
-      (if (#{:levels :vignette} kind)
+      (if (or (#{:levels :vignette} kind)
+              (and (= kind :curves) (= straight (parse-points (get p (cv-key :l))))))
         {:curves (build-curves f curve-n)}
         {:cube {:n cube-n :data (build-cube f cube-n)}}))))
 
 (defonce ^:private cache (atom {:order [] :tables {}}))
 (def ^:private cache-size 24)
 
-(defn- table-key [kind p] [kind (select-keys p (keys (settings kind)))])
+(defn- table-key [kind p] [kind (select-keys p (setting-keys kind))])
 
 (defn cached
   "The table for these settings if it's built, else ::none."

@@ -408,7 +408,7 @@
 (defn- levels-settings [doc layer tool]
   (let [ch @channel*
         [b gr wt] (levels-points layer ch)
-        picking (when (= :pick (:mode tool)) (:pick tool))
+        picking (when (= :pick (:mode tool)) (#{:black :grey :white} (:pick tool)))
         pick-button (fn [which label]
                       [:button {:key which :icon "EYEDROPPER" :text label
                                 :description (str "Click the image to set the " label " point")
@@ -429,6 +429,104 @@
                :on-change #(act/set-level! ch :white (/ (double %) 100.0))}]
      (when picking [:label {:key :hint :text (str "Click the image to pick the " (name picking) " point")
                             :text-color [1 0.85 0.4 1]}])]))
+
+;; curves: a channel's points over the histogram of what curves receives;
+;; click to add a point, drag to move it, double-click to remove it
+(defonce ^:private curve-ch* (r/atom :rgb))
+(defonce ^:private curve-drag (atom nil))   ; {:i point index :step undo step}
+(defonce ^:private curve-steps (atom 0))
+(defonce ^:private curve-size (r/atom [300 220]))
+(defonce ^:private curve-data (atom {:key nil :hist nil}))
+(def ^:private curve-pad 8)
+(def ^:private curve-labels ["Luminance" "RGB" "Red" "Green" "Blue"])
+
+(defn- curve-histogram [doc rs rev]
+  (let [k [(:id doc) (:base doc) rs (g/crop-rect doc) rev]]
+    (when (and (:base doc) (not= k (:key @curve-data)))
+      (reset! curve-data {:key k :hist (px/histogram (:base doc) rs (g/crop-rect doc))}))
+    (:hist @curve-data)))
+
+(defn- curve-points [layer ch] (c/parse-points (get layer (c/cv-key ch))))
+
+(defn- curves-graph [doc layer]
+  (let [ch @curve-ch*
+        [w h] @curve-size
+        pts (curve-points layer ch)
+        f (c/curve-fn pts)
+        rs (when (:base doc) (refs doc :curves))
+        hist (when (:base doc) (curve-histogram doc rs @s/pixels-rev*))
+        pad curve-pad
+        iw (- w (* 2 pad)) ih (- h (* 2 pad))
+        sx (fn [v] (+ pad (* v iw))) sy (fn [v] (+ pad (* (- 1 v) ih)))
+        ->x (fn [x] (/ (- x pad) (double iw))) ->y (fn [y] (- 1.0 (/ (- y pad) (double ih))))
+        hit (/ 9.0 (max 1.0 (min iw ih)))
+        colour (case ch :r [1 0.45 0.45 1] :g [0.45 1 0.5 1] :b [0.5 0.65 1 1] [0.9 0.9 0.9 1])
+        curve (mapv (fn [i] (let [x (/ i 96.0)] [(sx x) (sy (f x))])) (range 97))
+        bins (when hist (get hist (case ch :r :r :g :g :b :b :l)))
+        top (when bins (max 1.0 (Math/sqrt (double (apply max (subvec bins 1 255))))))
+        shape (when bins
+                (vec (concat [(sx 0) (sy 0)]
+                             (mapcat (fn [i] [(sx (/ (+ i 0.5) 256.0))
+                                              (sy (min 1.0 (/ (Math/sqrt (double (nth bins i))) top)))])
+                                     (range 256))
+                             [(sx 1) (sy 0)])))
+        put! (fn [pts' step] (act/set-curve! ch pts' step))]
+    [:canvas {:reqheight (px 270) :events 1
+              :on-configure (fn [cw chh] (let [v [(long cw) (long chh)]] (when (not= v @curve-size) (reset! curve-size v))))
+              :on-press (fn [x y]
+                          (let [cx (->x x) cy (->y y)
+                                step (swap! curve-steps inc)]
+                            (if-let [i (c/point-near pts cx cy hit)]
+                              (reset! curve-drag {:i i :step step})
+                              (let [[pts' i] (c/add-point pts cx cy)]
+                                (reset! curve-drag {:i i :step step})
+                                (put! pts' step)))))
+              :on-motion (fn [x y]
+                           (when-let [{:keys [i step]} @curve-drag]
+                             (let [cur (curve-points (or (d/layer-of @s/db* (:id doc) :curves) layer) ch)]
+                               (when (< i (count cur))
+                                 (put! (c/move-point cur i (->x x) (->y y)) step)))))
+              :on-release (fn [_ _] (reset! curve-drag nil))
+              :on-double (fn [x y]
+                           (reset! curve-drag nil)
+                           (let [cur (curve-points (or (d/layer-of @s/db* (:id doc) :curves) layer) ch)]
+                             (when-let [i (c/point-near cur (->x x) (->y y) hit)]
+                               (put! (c/remove-point cur i) nil))))
+              :canvas-items
+              (cond-> [{:id 1 :type :rect :coords [pad pad (- w pad) (- h pad)] :fill [0.12 0.12 0.12 1]
+                        :outline [1 1 1 0.15] :width 1}]
+                shape (conj {:id 2 :type :polygon :coords shape :fill (assoc colour 3 0.22) :width 0})
+                true (into (for [i [1 2 3] [k coords] [[0 [(sx (/ i 4.0)) pad (sx (/ i 4.0)) (- h pad)]]
+                                                        [1 [pad (sy (/ i 4.0)) (- w pad) (sy (/ i 4.0))]]]]
+                             {:id (+ 10 (* 2 i) k) :type :line :coords coords :fill [1 1 1 0.1] :width 1}))
+                ;; the straight line, faint, to compare against
+                true (conj {:id 30 :type :line :coords [(sx 0) (sy 0) (sx 1) (sy 1)] :fill [1 1 1 0.12] :width 1})
+                ;; the curve as segments (a line item draws only its first one)
+                true (into (map-indexed (fn [i [[x0 y0] [x1 y1]]]
+                                          {:id (+ 100 i) :type :line :coords [x0 y0 x1 y1] :fill colour :width 1.5})
+                                        (partition 2 1 curve)))
+                true (into (map-indexed (fn [i [px py]]
+                                          (let [x (sx px) y (sy py)]
+                                            {:id (+ 300 i) :type :oval :coords [(- x 5) (- y 5) (+ x 5) (+ y 5)]
+                                             :fill [0.85 0.85 0.85 1] :outline [0 0 0 0.7] :width 1}))
+                                        pts)))}]))
+
+(defn- curves-settings [doc layer tool]
+  (let [ch @curve-ch*
+        picking? (and (= :pick (:mode tool)) (= :curve (:pick tool)))]
+    [:vbox {:spacing 4}
+     [:hbox {:key :head :spacing 4}
+      [:dropdown {:items curve-labels :value (index-of c/curve-channels ch) :weight 1
+                  :on-change #(reset! curve-ch* (nth c/curve-channels (long %)))}]
+      [:button {:icon "EYEDROPPER" :text "Pick"
+                :description "Click the image to put a point at its tone on this curve"
+                :on-click #(if picking? (act/set-tool! :pan nil) (act/start-pick! :curve ch))}]
+      [:button {:text "Clear" :description "Straighten this channel's curve"
+                :on-click #(act/set-curve! ch [[0.0 0.0] [1.0 1.0]] nil)}]]
+     [curves-graph doc layer]
+     [:label {:key :hint :text-color [1 1 1 0.55]
+              :text (if picking? "Click the image to pick a tone"
+                        "Click to add a point, drag it, double-click to remove")}]]))
 
 (defn- vignette-settings [layer]
   [:vbox {:spacing 4}
@@ -473,6 +571,7 @@
         :focus (focus-settings layer)
         :light (light-settings layer)
         :levels (levels-settings doc layer tool)
+        :curves (curves-settings doc layer tool)
         :balance (balance-settings layer)
         :hsl (hsl-settings layer)
         :selective (selective-settings layer)
