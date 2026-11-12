@@ -206,3 +206,19 @@
       (let [in #(nth (d/input-signatures % 1) 1)]
         (is (= (in db) (in (d/bump-mask db r))))
         (is (not= (in db) (in (d/bump-mask db n))))))))
+
+(deftest lens-layers
+  (let [[db s] (d/ensure-layer db0 1 :sharpen)
+        [db l] (d/ensure-layer db 1 :lens)]
+    (testing "lens correction lives on the Dimensions tab, under every other layer"
+      (is (= [:lens] (d/kinds-in :dimensions)))
+      (is (= [:lens :sharpen] (kinds db))))
+    (testing "on by default: distortion, TCA, vignetting and auto-fill, method chosen automatically"
+      (is (= {:model :classic :lens-method :auto :lens-dist true :lens-tca true :lens-vig true
+              :lens-fill true :lens-id nil}
+             (d/params (d/layer db l)))))
+    (testing "it is processed, and editing it makes the layers above stale"
+      (let [db (processed db)
+            y (d/set-param db l :lens-tca false)]
+        (is (not (d/live? (d/layer db l))))
+        (is (= [0 1] (d/stale-indices y 1)))))))

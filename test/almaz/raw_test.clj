@@ -2,6 +2,7 @@
   "Decode the bundled Nikon Z9 HE NEF through the LibRaw shim. Needs
    native/raw/build.sh and DSC_9852.NEF in the project root."
   (:require [clojure.test :refer [deftest is testing]]
+            [almaz.lens :as lens]
             [almaz.raw :as raw]
             [almaz.pixels :as px]))
 
@@ -85,6 +86,14 @@
           (is (< (Math/abs (- 0.008 (:exposure m))) 1e-9))
           (is (= 5.0 (:fnumber m)))
           (is (= 400 (:iso (raw/metadata arw))))))
+      (testing "its embedded lens corrections (DistortionCorrParams & co.)"
+        (let [{:keys [distortion ca vignetting] :as c} (px/sony-corrections arw)]
+          (is (= 16 (first distortion)))
+          (is (= 32 (first ca)))
+          (is (= 16 (first vignetting)))
+          (is (lens/sony-valid? c))))
+      (testing "the NEF has none"
+        (is (nil? (px/sony-corrections nef))))
       (testing "the embedded preview"
         (let [t (raw/thumbnail arw)]
           (is (pos? (px/width t)))

@@ -168,6 +168,17 @@ int almz_gpu_active(void);
 /* Write the full-resolution composite of base + layers into `dst` (same size). */
 void almz_composite_into(AlmzImg *dst, const AlmzImg *base, const AlmzLayer *layers, int nlayers);
 
+/* -- lens correction ------------------------------------------------------ */
+/* Rows [y0, y1) of `dst` from `src` (same size, distinct) undistorted by
+ * radial tables (almaz.lens): a corrected pixel at distance r from the
+ * centre (cx, cy) is read, per channel c, from the source at the centre plus
+ * k[c * n + i(r)] times its offset, where the n entries of each channel's
+ * table cover r in 0..rmax (linearly interpolated, ends held); bicubic,
+ * clamped at the edges. `vig` (n gains over source radius 0..vrmax, may be
+ * NULL) then brightens it in linear light. Updates the pyramid there. */
+void almz_lens_warp(AlmzImg *dst, const AlmzImg *src, double cx, double cy, double rmax, int n,
+                    const float *k, double vrmax, const float *vig, int y0, int y1);
+
 /* -- tiled inference ----------------------------------------------------- */
 /* The composite of base + layers[0..n) over the tile (x0, y0, tw, th) as
  * planar NCHW floats 0..1. Outside the image the edge is mirrored. */
@@ -206,6 +217,10 @@ typedef struct AlmzMeta {
 /* Read the metadata of a JPEG (APP1), PNG (eXIf) or any TIFF-structured
  * file (TIFF, NEF, ARW, DNG, CR2, ...). 1 when any field was found. */
 int almz_meta_read(const char *path, AlmzMeta *out);
+/* The lens corrections a Sony raw file carries (DistortionCorrParams,
+ * ChromaticAberrationCorrParams, VignettingCorrParams), each as stored: a
+ * count, then the values; at most `cap` ints of each. 1 when present. */
+int almz_sony_corrections(const char *path, int32_t *dist, int32_t *ca, int32_t *vig, int cap);
 /* Serialize as a little-endian EXIF TIFF structure (no "Exif\0\0" prefix).
  * Returns the length; *out is malloc'd. 0 when there is nothing to write. */
 size_t almz_exif_build(const AlmzMeta *m, uint8_t **out);

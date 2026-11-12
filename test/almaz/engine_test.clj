@@ -153,3 +153,27 @@
         (is (= before (px/pixel out 80 100)))))
     (px/free-mask! mask)
     (doseq [i [base out]] (px/free-image! i))))
+
+(deftest lens-correction
+  (let [w 300 h 200
+        base (filled w h (fn [x y] [(/ x 299.0) (/ y 199.0) 0.5]))
+        out (px/new-image w h)
+        k (vec (repeat 3 (vec (repeat 32 0.5))))
+        plan {:center [149.5 99.5] :rmax 200.0 :k k :vrmax 200.0 :vig nil}]
+    (testing "no plan: the composite below as it is"
+      (is (= :done (eng/lens! {:base base :below [] :out out :plan nil})))
+      (is (< (max-diff base out w h) 1e-4)))
+    (testing "a plan warps every band, reporting progress"
+      (let [seen (atom [])]
+        (is (= :done (eng/lens! {:base base :below [] :out out :plan plan
+                                 :progress (fn [d t] (swap! seen conj [d t]))})))
+        (is (= [2 2] (last @seen)))
+        (is (< (Math/abs (- (first (px/pixel out 299 0)) (/ (+ 149.5 (* 0.5 149.5)) 299.0))) 2e-3))
+        (is (< (Math/abs (- (first (px/pixel out 0 199)) (/ (* 0.5 149.5) 299.0))) 2e-3))))
+    (testing "cancelled between bands"
+      (is (= :cancelled (eng/lens! {:base base :below [] :out out :plan plan :cancelled? (constantly true)}))))
+    (testing "settings as plan options"
+      (is (= {:method :lensfun :dist? true :tca? false :vig? true :autofill? true :lens "X"}
+             (eng/lens-opts {:lens-method :lensfun :lens-dist true :lens-tca false :lens-vig true
+                             :lens-fill true :lens-id "X"}))))
+    (doseq [i [base out]] (px/free-image! i))))

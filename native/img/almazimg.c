@@ -441,6 +441,87 @@ static inline float lin_to_srgb(float v) {
   return v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
 }
 
+/* ---- lens correction ---------------------------------------------------- */
+/* Keys' cubic (a = -0.5, Catmull-Rom) weights for fraction t. */
+static inline void cubic_w(float t, float *w) {
+  const float t2 = t * t, t3 = t2 * t;
+  w[0] = -0.5f * t3 + t2 - 0.5f * t;
+  w[1] = 1.5f * t3 - 2.5f * t2 + 1.0f;
+  w[2] = -1.5f * t3 + 2.0f * t2 + 0.5f * t;
+  w[3] = 0.5f * t3 - 0.5f * t2;
+}
+
+/* Channel ch of level 0 at (x, y), bicubic, coordinates clamped to the
+ * image (darktable's lens module clamps too), 0..65535. */
+static float sample_cubic(const AlmzImg *img, float x, float y, int ch) {
+  const int w = img->w, h = img->h;
+  x = CLAMP(x, 0.0f, (float)(w - 1));
+  y = CLAMP(y, 0.0f, (float)(h - 1));
+  const int ix = (int)floorf(x), iy = (int)floorf(y);
+  float wx[4], wy[4];
+  cubic_w(x - ix, wx);
+  cubic_w(y - iy, wy);
+  const uint16_t *d = img->lev[0];
+  float acc = 0.0f;
+  for (int j = 0; j < 4; j++) {
+    const int yy = CLAMP(iy - 1 + j, 0, h - 1);
+    const uint16_t *row = d + (size_t)yy * w * 3;
+    float r = 0.0f;
+    for (int i = 0; i < 4; i++) r += wx[i] * row[(size_t)CLAMP(ix - 1 + i, 0, w - 1) * 3 + ch];
+    acc += wy[j] * r;
+  }
+  return CLAMP(acc, 0.0f, 65535.0f);
+}
+
+/* table[0..n) over 0..rmax at r, linearly; the ends held. */
+static inline float radial(const float *table, int n, double rmax, double r) {
+  const double t = r / rmax * (n - 1);
+  if (t <= 0) return table[0];
+  if (t >= n - 1) return table[n - 1];
+  const int i = (int)t;
+  const float f = (float)(t - i);
+  return table[i] + (table[i + 1] - table[i]) * f;
+}
+
+typedef struct {
+  AlmzImg *dst;
+  const AlmzImg *src;
+  double cx, cy, rmax, vrmax;
+  int n, y0;
+  const float *k, *vig;
+} lens_ctx;
+
+static void lens_rows(void *p, int r0, int r1) {
+  const lens_ctx *c = (const lens_ctx *)p;
+  const int w = c->dst->w;
+  for (int y = c->y0 + r0; y < c->y0 + r1; y++) {
+    uint16_t *o = c->dst->lev[0] + (size_t)y * w * 3;
+    const double dy = y - c->cy;
+    for (int x = 0; x < w; x++) {
+      const double dx = x - c->cx;
+      const double rho = sqrt(dx * dx + dy * dy);
+      const float kg = radial(c->k + c->n, c->n, c->rmax, rho);
+      const float gain = c->vig ? radial(c->vig, c->n, c->vrmax, rho * kg) : 1.0f;
+      for (int ch = 0; ch < 3; ch++) {
+        const float k = ch == 1 ? kg : radial(c->k + ch * c->n, c->n, c->rmax, rho);
+        float v = sample_cubic(c->src, (float)(c->cx + k * dx), (float)(c->cy + k * dy), ch) / 65535.0f;
+        if (gain != 1.0f) v = lin_to_srgb(MIN(srgb_to_lin(v) * gain, 1.0f));
+        o[(size_t)x * 3 + ch] = (uint16_t)(CLAMP(v, 0.0f, 1.0f) * 65535.0f + 0.5f);
+      }
+    }
+  }
+}
+
+void almz_lens_warp(AlmzImg *dst, const AlmzImg *src, double cx, double cy, double rmax, int n,
+                    const float *k, double vrmax, const float *vig, int y0, int y1) {
+  if (!dst || !src || dst == src || dst->w != src->w || dst->h != src->h || n < 2) return;
+  y0 = CLAMP(y0, 0, dst->h);
+  y1 = CLAMP(y1, y0, dst->h);
+  lens_ctx c = {dst, src, cx, cy, rmax, vrmax, n, y0, k, vig};
+  par_for(y1 - y0, 8, lens_rows, &c);
+  almz_img_pyr_update(dst, 0, y0, dst->w, y1 - y0);
+}
+
 /* The tone curve on an sRGB value. Each step maps 0..1 onto itself and is
  * increasing, so the whole curve is: exposure (linear light, clipped), the
  * white and black points, shadows and highlights (bumps that vanish at both

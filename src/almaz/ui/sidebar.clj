@@ -9,6 +9,7 @@
             [almaz.doc :as d]
             [almaz.engine :as eng]
             [almaz.geom :as g]
+            [almaz.lens :as lens]
             [almaz.pixels :as px]
             [almaz.state :as s]
             [almaz.tables :as tables]
@@ -474,6 +475,55 @@
      (for [k (d/kinds-in :color)] (filter-panel ctx k false))]))
 
 ;; ---- dimensions ------------------------------------------------------------------
+;; Lens correction: the camera and lens detected from the metadata (lensfun's
+;; database, or the corrections the raw file embeds), what to correct.
+(defn- lens-section [{:keys [db doc sigs job stale-id]}]
+  (let [layer (layer-or-defaults db doc :lens)
+        lid (:id layer)
+        idx (when lid (d/layer-index db lid))
+        exif (when doc (d/exif db (:id doc)))
+        {:keys [camera lenses] detected :lens} (when exif (lens/detect exif))
+        photo (when (:w doc) (eng/lens-photo db doc))
+        embedded? (boolean (some-> (:embedded photo) lens/sony-valid?))
+        p (when (and (:enabled layer) photo) (eng/lens-plan db doc layer))
+        labels (mapv lens/label lenses)
+        cur (or (:lens-id layer) (some-> detected lens/label))
+        ok (if doc 1 0)
+        check (fn [k label]
+                [:checkbox {:key k :label label :value (if (get layer k) 1 0) :enabled ok
+                            :on-change #(act/set-param! :lens k (pos? %))}])]
+    [:vbox {:key :lens :spacing 4}
+     [:hbox {:key :head :spacing 4}
+      [:checkbox {:label "Lens correction" :value (if (:enabled layer) 1 0) :enabled ok
+                  :on-change #(act/set-enabled! :lens (pos? %))}]]
+     [:label {:key :camera :text-color [1 1 1 0.7]
+              :text (cond (nil? exif) "No camera metadata"
+                          camera (str "Camera: " (lens/label camera))
+                          :else (str "Camera: " (:make exif) " " (:model exif) " (no profile)"))}]
+     (when embedded?
+       [:hbox {:key :method :spacing 4}
+        [:label {:text "Profile" :weight 0 :reqwidth (px 52)}]
+        [:enum {:items ["Auto" "Lensfun" "Camera"] :weight 1 :enabled ok
+                :value (case (:lens-method layer) :lensfun 1 :embedded 2 0)
+                :on-change #(act/set-param! :lens :lens-method ([:auto :lensfun :embedded] (long %)))}]])
+     (if (seq labels)
+       [:dropdown {:key :lens-pick :items labels :enabled ok
+                   :value (index-of labels cur)
+                   :on-change #(act/set-param! :lens :lens-id (nth labels (long %)))}]
+       (when exif
+         [:label {:key :lens-none :text (str "Lens: " (or (:lens exif) "unknown") " (not in the database)")
+                  :text-color [1 1 1 0.55]}]))
+     (check :lens-dist "Distortion")
+     (check :lens-tca "Chromatic aberration")
+     (check :lens-vig "Vignetting")
+     (check :lens-fill "Fill the frame")
+     (when (:enabled layer)
+       [:label {:key :status :text-color [1 1 1 0.55]
+                :text (cond
+                        (and photo (nil? p)) "Nothing to correct with for this photo"
+                        :else (str (case (:method p) :embedded "Camera's own correction. " :lensfun "Lensfun profile. " "")
+                                   (or (layer-status doc layer (when idx (nth sigs idx)) (when (= lid stale-id) job)) "")))}])]))
+
 (defn dimensions-page []
   (let [doc (s/current-doc)
         ok (if (:base doc) 1 0)
@@ -481,6 +531,8 @@
         [bw bh] (when (:w doc) (g/display-size doc true))
         ci (or (first (keep-indexed (fn [i x] (when (= (:key x) (:constrain doc)) i)) g/constraints)) 0)]
     [:vbox {:spacing 6 :padding 4}
+     [lens-section (panels-ctx)]
+     [:separator]
      [:label {:text "Orientation" :bold 1}]
      [:hbox {:spacing 4}
       [:button {:icon "LOOP_BACK" :text "Rotate left" :enabled ok :on-click #(act/rotate! -1)}]

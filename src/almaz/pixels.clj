@@ -48,6 +48,9 @@
 (ffi/defcfn tile-detail*    "almz_tile_detail"
   [:pointer :pointer :int32 :int32 :float :float] :void :blocking)
 
+(ffi/defcfn lens-warp*      "almz_lens_warp"
+  [:pointer :pointer :double :double :double :int32 :pointer :double :pointer :int32 :int32] :void :blocking)
+(ffi/defcfn sony-corrections* "almz_sony_corrections" [:pointer :pointer :pointer :pointer :int32] :int32 :blocking)
 (ffi/defcfn estimate*       "almz_estimate"       [:pointer :pointer :pointer] :void :blocking)
 
 (ffi/defcfn load*           "almz_load"           [:pointer :pointer] :pointer :blocking)
@@ -358,6 +361,33 @@
   "Put back `amount` of the input's fine detail into the output tile."
   [out in size {:keys [sigma amount]}]
   (tile-detail* out in (int size) (int size) (float sigma) (float amount)))
+
+;; ---- lens correction ---------------------------------------------------------
+(defn lens-warp!
+  "Rows [y0, y1) of `dst` from `src` (same size) through an almaz.lens plan
+   {:center [x y] :rmax :k [kr kg kb] :vrmax :vig}."
+  ([dst src lens-plan] (lens-warp! dst src lens-plan 0 (height dst)))
+  ([dst src {[cx cy] :center :keys [rmax k vrmax vig]} y0 y1]
+   (with-open [a (ffi/confined-arena)]
+     (let [n (count (first k))]
+       (lens-warp* dst src (double cx) (double cy) (double rmax) (int n)
+                   (floats a (float-array (apply concat k)))
+                   (double (or vrmax 1.0)) (if vig (floats a (float-array vig)) ffi/null)
+                   (int y0) (int y1))))))
+
+(def ^:private sony-cap 64)
+
+(defn sony-corrections
+  "The lens corrections a Sony raw file carries, {:distortion :ca
+   :vignetting} (each count-prefixed, as stored; almaz.lens/sony-coeffs), or
+   nil."
+  [path]
+  (with-open [a (ffi/confined-arena)]
+    (let [bufs (repeatedly 3 #(ffi/alloc a (* 4 sony-cap)))
+          [d c v] bufs]
+      (when (pos? (sony-corrections* (ffi/string->ptr a path) d c v (int sony-cap)))
+        (let [rd #(vec (for [i (range sony-cap)] (long (ffi/read % :int32 (* 4 i)))))]
+          {:distortion (rd d) :ca (rd c) :vignetting (rd v)})))))
 
 ;; ---- estimators --------------------------------------------------------------
 (defn estimate

@@ -532,3 +532,41 @@
       (px/mask-restore! m snap)
       (is (< (px/mask-at m 32 32) 0.01)))
     (doseq [x [m snap]] (px/free-mask! x))))
+
+(defn- plan [w h kfn & [vig]]
+  (let [n 64 rmax (+ 2.0 (* 0.5 (Math/hypot w h)))]
+    {:center [(/ (dec w) 2.0) (/ (dec h) 2.0)] :rmax rmax :vrmax rmax
+     :k (vec (for [ch (range 3)] (vec (repeat n (kfn ch)))))
+     :vig (when vig (vec (repeat n vig)))}))
+
+(deftest lens-warp
+  (let [w 41 h 31
+        src (filled w h (fn [x y] [(/ x 40.0) (/ y 30.0) 0.25]))
+        dst (px/new-image w h)]
+    (testing "k = 1 everywhere: the image unchanged (bicubic is exact on the grid)"
+      (px/lens-warp! dst src (plan w h (constantly 1.0)))
+      (doseq [[x y] [[0 0] [7 9] [40 30] [20 15]]]
+        (is (every? true? (map (partial close? 2e-5) (px/pixel src x y) (px/pixel dst x y))))))
+    (testing "k = 0.5: a pixel reads halfway to the centre (a ramp stays a ramp)"
+      (px/lens-warp! dst src (plan w h (constantly 0.5)))
+      (let [[r g] (px/pixel dst 40 30)]
+        (is (close? 2e-3 (/ 30.0 40.0) r))
+        (is (close? 2e-3 (/ 22.5 30.0) g))))
+    (testing "per channel: red reads further out than green (TCA)"
+      (px/lens-warp! dst src (plan w h #(if (= 0 %) 0.9 0.5)))
+      (let [[r g] (px/pixel dst 0 15)]
+        (is (close? 2e-3 (/ 2.0 40.0) r))
+        (is (close? 2e-3 (/ 7.5 30.0) (second (px/pixel dst 20 0))))))
+    (testing "vignetting gain multiplies linear light"
+      (let [grey (filled w h (constantly [0.5 0.5 0.5]))]
+        (px/lens-warp! dst grey (plan w h (constantly 1.0) 2.0))
+        (let [lin (fn [v] (if (<= v 0.04045) (/ v 12.92) (Math/pow (/ (+ v 0.055) 1.055) 2.4)))]
+          (is (close? 2e-3 (* 2 (lin 0.5)) (lin (first (px/pixel dst 5 5))))))
+        (px/free-image! grey)))
+    (testing "only the rows asked for"
+      (let [black (px/new-image w h)]
+        (px/lens-warp! black src (plan w h (constantly 1.0)) 10 12)
+        (is (= [0.0 0.0 0.0] (mapv double (px/pixel black 5 9))))
+        (is (pos? (first (px/pixel black 5 10))))
+        (px/free-image! black)))
+    (doseq [i [src dst]] (px/free-image! i))))

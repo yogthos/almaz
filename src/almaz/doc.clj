@@ -73,7 +73,12 @@
    :tab is where its panel lives, :params its settings' defaults, :opacity
    the strength it starts at when switched on by hand (else full). A :live
    kind is computed as it is drawn (no processing, no pixels of its own)."
-  {:denoise   {:label "Denoise" :order 0 :tab :enhance :opacity 0.5
+  {;; lens correction (almaz.lens) undoes the lens's geometry first, so every
+   ;; layer above (and every mask) works on the corrected image
+   :lens      {:label "Lens Correction" :order -1 :tab :dimensions :opacity 1.0
+               :params {:model :classic :lens-method :auto :lens-dist true :lens-tca true
+                        :lens-vig true :lens-fill true :lens-id nil}}
+   :denoise   {:label "Denoise" :order 0 :tab :enhance :opacity 0.5
                :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
    :sharpen   {:label "Sharpen" :order 1 :tab :enhance :opacity 0.5
                :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
@@ -127,6 +132,14 @@
     [:whites      :real    :default 0.0 :check [:and [>= :whites -1.0] [<= :whites 1.0]]]
     [:blacks      :real    :default 0.0 :check [:and [>= :blacks -1.0] [<= :blacks 1.0]]]
     [:saturation  :real    :default 0.0 :check [:and [>= :saturation -1.0] [<= :saturation 1.0]]]
+    ;; lens correction: how (almaz.lens/plan), what, and a lens chosen over
+    ;; the detected one (its almaz.lens/label)
+    [:lens-method :keyword :default :auto :check [contains? #{:auto :lensfun :embedded} :lens-method]]
+    [:lens-dist   :bool    :default true]
+    [:lens-tca    :bool    :default true]
+    [:lens-vig    :bool    :default true]
+    [:lens-fill   :bool    :default true]
+    [:lens-id     :text    :nullable]
     [:feather     :real    :default 24.0]
     [:mask-rev    :int     :default 0]
     [:done-sig    :text    :nullable]        ; the signature its output matches

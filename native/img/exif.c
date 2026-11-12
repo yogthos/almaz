@@ -44,8 +44,8 @@ static uint32_t u32(const tiff_t *t, const uint8_t *b) {
 
 /* T_IFD: an offset to a sub-IFD; libtiff 4.5 writes the EXIF pointer with it
  * where 4.7 writes T_LONG, and other writers use either. */
-enum { T_BYTE = 1, T_ASCII = 2, T_SHORT = 3, T_LONG = 4, T_RATIONAL = 5, T_UNDEF = 7, T_SRATIONAL = 10,
-       T_IFD = 13 };
+enum { T_BYTE = 1, T_ASCII = 2, T_SHORT = 3, T_LONG = 4, T_RATIONAL = 5, T_UNDEF = 7, T_SSHORT = 8,
+       T_SLONG = 9, T_SRATIONAL = 10, T_IFD = 13 };
 
 typedef struct {
   uint32_t tag, type, count, value_off; /* value_off: offset of the value (inline or pointed) */
@@ -54,8 +54,8 @@ typedef struct {
 static int type_size(uint32_t type) {
   switch (type) {
   case T_BYTE: case T_ASCII: case T_UNDEF: return 1;
-  case T_SHORT: return 2;
-  case T_LONG: case T_IFD: return 4;
+  case T_SHORT: case T_SSHORT: return 2;
+  case T_LONG: case T_SLONG: case T_IFD: return 4;
   case T_RATIONAL: case T_SRATIONAL: return 8;
   default: return 0;
   }
@@ -142,6 +142,68 @@ static int parse_tiff(src_t src, AlmzMeta *m) {
       }
     }
   }
+  return found;
+}
+
+/* ---- embedded lens corrections ---------------------------------------- */
+/* Element i of an integer array entry (signed per its type). */
+static int32_t get_int(const tiff_t *t, const entry_t *e, uint32_t i) {
+  uint8_t b[4];
+  const int sz = type_size(e->type);
+  if (i >= e->count || !read_at(&t->src, e->value_off + (long)i * sz, b, sz)) return 0;
+  switch (e->type) {
+  case T_SHORT: return (int32_t)u16(t, b);
+  case T_SSHORT: return (int16_t)u16(t, b);
+  case T_LONG: return (int32_t)u32(t, b);
+  case T_SLONG: case T_IFD: return (int32_t)u32(t, b);
+  default: return 0;
+  }
+}
+
+/* Sony's VignettingCorrParams (0x7032), ChromaticAberrationCorrParams
+ * (0x7035) and DistortionCorrParams (0x7037) from the IFD at `off`, as
+ * darktable reads them (Exif.SubImage1.*, or IFD0 after a DNG round trip).
+ * 1 when all three are there. */
+static int sony_tags(const tiff_t *t, long off, int32_t *dist, int32_t *ca, int32_t *vig, int cap) {
+  entry_t es[256];
+  const entry_t *d = NULL, *c = NULL, *v = NULL;
+  const int n = read_ifd(t, off, es, 256);
+  for (int i = 0; i < n; i++)
+    switch (es[i].tag) {
+    case 0x7032: v = &es[i]; break;
+    case 0x7035: c = &es[i]; break;
+    case 0x7037: d = &es[i]; break;
+    }
+  if (!d || !c || !v) return 0;
+  for (int i = 0; i < cap; i++) {
+    dist[i] = get_int(t, d, (uint32_t)i);
+    ca[i] = get_int(t, c, (uint32_t)i);
+    vig[i] = get_int(t, v, (uint32_t)i);
+  }
+  return 1;
+}
+
+int almz_sony_corrections(const char *path, int32_t *dist, int32_t *ca, int32_t *vig, int cap) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return 0;
+  fseek(f, 0, SEEK_END);
+  src_t s = {f, NULL, 0, ftell(f)};
+  tiff_t t = {s, 1};
+  uint8_t h[8];
+  int found = 0;
+  if (read_at(&t.src, 0, h, 8) && ((h[0] == 'I' && h[1] == 'I') || (h[0] == 'M' && h[1] == 'M'))) {
+    t.le = h[0] == 'I';
+    const long ifd0 = u32(&t, h + 4);
+    found = sony_tags(&t, ifd0, dist, ca, vig, cap);
+    if (!found) {
+      entry_t es[256];
+      const int n = read_ifd(&t, ifd0, es, 256);
+      for (int i = 0; i < n && !found; i++)
+        if (es[i].tag == 0x014A) /* SubIFDs: SubImage1 is the first */
+          found = sony_tags(&t, (long)(uint32_t)get_int(&t, &es[i], 0), dist, ca, vig, cap);
+    }
+  }
+  fclose(f);
   return found;
 }
 

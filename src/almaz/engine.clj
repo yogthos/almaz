@@ -11,6 +11,8 @@
             [almaz.geom :as g]
             [almaz.infer.protocol :as p]
             [almaz.infer.tile :as tile]
+            [almaz.lens :as lens]
+            [almaz.raw :as raw]
             [almaz.pixels :as px]
             [jolt.ffi :as ffi]))
 
@@ -160,3 +162,48 @@
             (finally (ffi/free src) (ffi/free res) (ffi/free hole)))
           (progress (inc i) (count crops))
           (recur more as (inc i)))))))
+
+;; ---- lens correction -----------------------------------------------------------
+(def ^:private embedded
+  (memoize (fn [path] (when (and path (raw/raw-file? path)) (px/sony-corrections path)))))
+
+(defn lens-opts
+  "A lens layer's settings as almaz.lens/plan options."
+  [{:keys [lens-method lens-dist lens-tca lens-vig lens-fill lens-id]}]
+  {:method (or lens-method :auto) :dist? lens-dist :tca? lens-tca :vig? lens-vig
+   :autofill? lens-fill :lens lens-id})
+
+(defn lens-photo
+  "What almaz.lens/plan needs to know of doc `dc`: its size, EXIF and the
+   corrections its raw file embeds."
+  [db {:keys [id path w h]}]
+  {:w w :h h :exif (d/exif db id) :embedded (embedded path)})
+
+(defn lens-plan
+  "How lens layer `layer` corrects doc `dc` (almaz.lens/plan), or nil."
+  [db dc layer]
+  (when (:w dc) (lens/plan (lens-photo db dc) (lens-opts layer))))
+
+(def ^:private lens-band "Rows per lens-correction step." 128)
+
+(defn lens!
+  "Undistort the composite of `base` + `below` into `out` by `plan` (an
+   almaz.lens plan; nil copies it), a band of rows at a time. opts:
+   :progress (fn [done total]), :cancelled? (fn []) between bands. Returns
+   :done or :cancelled."
+  [{:keys [base below out plan progress cancelled?]
+    :or {progress (fn [_ _]) cancelled? (constantly false)}}]
+  (let [w (px/width base) h (px/height base)
+        src (if (seq below) (doto (px/new-image w h) (px/composite-into! base below)) base)
+        bands (vec (range 0 h lens-band))]
+    (try
+      (if-not plan
+        (do (px/composite-into! out base below) :done)
+        (loop [[y & more] bands i 0]
+          (cond
+            (nil? y) :done
+            (cancelled?) :cancelled
+            :else (do (px/lens-warp! out src plan y (min h (+ y lens-band)))
+                      (progress (inc i) (count bands))
+                      (recur more (inc i))))))
+      (finally (when-not (= src base) (px/free-image! src))))))
