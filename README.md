@@ -211,23 +211,46 @@ native/tools/venv/bin/python native/tools/lensfun_to_clj.py ~/src/lensfun/data/d
 > channel noise that the SIDD model has never seen, so the app always decodes
 > RAW at full resolution.
 
-## Packaging (macOS)
+## Packaging
 
 ```sh
-jolt dist      # target/Almaz.app and target/Almaz-<version>-macos-arm64.zip
+jolt release   # the host platform's bundle (see below); `jolt dist` is an alias
 ```
 
-`native/tools/package_macos.clj` builds the app with `jolt build`, copies
-almaz's native libraries, the BUI kit and everything they load from Homebrew
-(about 100 dylibs) into `Contents/Frameworks`, relinks them to `@rpath`, and
-signs the bundle: ad-hoc by default, or with `ALMAZ_SIGN_IDENTITY="Developer
-ID Application: ..."`. The bundle's executable is a small launcher that puts
-`Contents/Frameworks` on `DYLD_LIBRARY_PATH` before running the app (so a
-notarized build with hardened runtime needs the
-`com.apple.security.cs.allow-dyld-environment-variables` entitlement). Apple
-Silicon only; models are downloaded on first use rather than bundled. The
-launcher also serves the command line:
+On macOS this writes `target/Almaz.app` and
+`target/Almaz-<version>-macos-arm64.zip`. `native/tools/package_macos.clj`
+builds the app with `jolt build`, copies almaz's native libraries, the BUI kit
+and everything they load from Homebrew (about 100 dylibs) into
+`Contents/Frameworks`, relinks them to `@rpath`, and signs the bundle: ad-hoc by
+default, or with `ALMAZ_SIGN_IDENTITY="Developer ID Application: ..."`. The
+bundle's executable is a small launcher that puts `Contents/Frameworks` on
+`DYLD_LIBRARY_PATH` before running the app (so a notarized build with hardened
+runtime needs the `com.apple.security.cs.allow-dyld-environment-variables`
+entitlement). Apple Silicon only; models are downloaded on first use rather than
+bundled. The launcher also serves the command line:
 `Almaz.app/Contents/MacOS/Almaz --help`.
+
+On Linux it writes `target/Almaz-linux-<arch>/` and
+`target/Almaz-<version>-linux-<arch>.tar.gz`:
+
+```
+Almaz-linux-x86_64/
+  bin/Almaz                 launcher (sets LD_LIBRARY_PATH to lib/, runs almaz-bin)
+  bin/almaz-bin             the app built by `jolt build`
+  lib/                      Almaz's native libraries, the BUI kit, and their
+                            non-system dependencies (ONNX Runtime, …)
+  share/applications/almaz.desktop
+  share/doc/almaz/LICENSE
+```
+
+`native/tools/package_linux.clj` follows `ldd` recursively, copies everything
+outside the distro's `/lib`, `/lib64` and `/usr/lib` trees, and keeps each
+library's SONAME as a symlink. Libraries the host must provide (glibc,
+libstdc++, X11/OpenGL and the X11 build of the image codecs) are not bundled;
+install them with the distro. When `patchelf` is available the bundle also gets
+`$ORIGIN` rpaths, so `bin/almaz-bin` runs without the launcher. To use the
+desktop entry, install the tree under `/opt/almaz` and symlink
+`bin/Almaz` into `PATH` (the entry's `Exec=Almaz`).
 
 ## Run and test
 

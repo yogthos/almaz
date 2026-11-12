@@ -19,7 +19,8 @@
 (require '[clojure.string :as str]
          '[jolt.process :as p])
 
-(def version "0.2.0")
+(def here (str (.getParent (java.io.File. *file*))))
+(def version (:version (clojure.edn/read-string (slurp (str here "/version.edn")))))
 (def app "target/Almaz.app")
 (def contents (str app "/Contents"))
 (def frameworks (str contents "/Frameworks"))

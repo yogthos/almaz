@@ -56,7 +56,9 @@
            :check {:extra-paths ["test"] :main-opts ["-m" "almaz.check"]}
            :test  {:extra-paths ["test"] :main-opts ["-m" "almaz.test-runner"]}}
 
- :tasks {dist  {:doc "package target/Almaz.app (macOS arm64)" :task (shell "jolt" "native/tools/package_macos.clj")}
+ :tasks {release {:doc "package the app for this platform (macOS .app, Linux tarball)"
+                  :task (shell "jolt" "native/tools/package.clj")}
+         dist  {:doc "alias for release" :task (shell "jolt" "native/tools/package.clj")}
          ;; `run` is also a jolt built-in; this one is the app
          run   {:doc "the app (files to open may follow)" :task (apply jolt "-M:run" *command-line-args*) :override-builtin true}
          native {:doc "fetch LibRaw + BUI into .deps/ and build every native library"
