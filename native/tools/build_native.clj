@@ -73,12 +73,30 @@
              ;; it ends up inside a shared library
              (when-not mac? ["CFLAGS=-O3 -I. -w -fPIC -DUSE_ZLIB"])))))
 
+(def bui-patches
+  "Our changes to BUI (native/patches/bui-*.patch), applied over the pinned
+  commit: trackpad scrolling that stops at a scroll view's ends."
+  (sort (filter #(re-find #"^bui-.*[.]patch$" %) (.list (java.io.File. (str root "/native/patches"))))))
+
+(defn- patch-stamp
+  "What the patched tree was built from: the commit and the patches' text."
+  []
+  (str bui-sha "\n" (str/join "\n" (map #(slurp (str root "/native/patches/" %)) bui-patches))))
+
 (defn bui! []
-  (let [fetched (fetch! "https://github.com/ppmpreetham/BUI" bui-dir bui-sha)
+  (let [stamp-file (str bui-dir "/.almaz-patches")
+        stale? (not= (patch-stamp) (when (exists? stamp-file) (slurp stamp-file)))
+        _ (when (and stale? (= bui-sha (head bui-dir)))
+            (sh! "git" "-C" bui-dir "checkout" "-q" "--" "."))
+        fetched (fetch! "https://github.com/ppmpreetham/BUI" bui-dir bui-sha)
         lib (str bui-dir "/lib/libbui." (if mac? "dylib" "so"))
         b (str bui-dir "/build")
         archives [(str b "/kit/libbui_kit.a") (str b "/gpu/libbui_gpu.a") (str b "/core/libbui_core.a")]]
-    (when (or fetched (not (exists? lib)))
+    (when (or fetched stale? (not (exists? lib)))
+      (when (or fetched stale?)
+        (doseq [p bui-patches]
+          (log "applying" p)
+          (sh! "git" "-C" bui-dir "apply" (str root "/native/patches/" p))))
       (log "building BUI")
       (sh! "cmake" "-S" bui-dir "-B" b "-DCMAKE_BUILD_TYPE=Release"
            "-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
@@ -90,7 +108,8 @@
                        ["-framework" "Cocoa" "-framework" "IOKit" "-framework" "CoreVideo"
                         "-framework" "AVFoundation" "-framework" "CoreMedia" "-lm" "-lpthread"]))
         (apply sh! "c++" "-shared" "-o" lib "-Wl,--whole-archive"
-               (concat archives ["-Wl,--no-whole-archive" "-lm" "-lpthread" "-ldl"]))))))
+               (concat archives ["-Wl,--no-whole-archive" "-lm" "-lpthread" "-ldl"])))
+      (spit stamp-file (patch-stamp)))))
 
 (defn shims! []
   (sh! "native/img/build.sh")

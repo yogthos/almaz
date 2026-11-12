@@ -1,0 +1,138 @@
+diff --git a/kit/include/BUI_kit.h b/kit/include/BUI_kit.h
+index 1776309..c213953 100644
+--- a/kit/include/BUI_kit.h
++++ b/kit/include/BUI_kit.h
+@@ -587,6 +587,11 @@ int BK_wheel(BKContext *ctx, int x, int y, int delta, int mods);
+  * dx > 0 right, dy > 0 up. Custom nodes receive the deltas as they are;
+  * other widgets get BK_wheel steps (horizontal ones as Shift + wheel). */
+ int BK_scroll(BKContext *ctx, int x, int y, float dx, float dy, int mods);
++/* Trackpad scrolling by `dy` pixels (positive: towards the top) of the scroll
++ * view under (x, y), clamped at its ends. Returns 0 when there is none (the
++ * caller falls back to wheel notches), 1 when it took the scroll, moved or
++ * not: a page scrolled to its end stays put instead of stepping back. */
++int BK_scroll_pixels(BKContext *ctx, int x, int y, int dy, int mods);
+ int BK_key(BKContext *ctx, const char *text, const char *keysym, int mods);
+ int BK_context_menu(BKContext *ctx, int x, int y, int mods);
+ /* Raw-only input for host bindings (Tk's <KeyRelease>, <Button-2>, <ButtonRelease-3>):
+diff --git a/kit/intern/kit_core.c b/kit/intern/kit_core.c
+index 1dbe6a5..5a8676c 100644
+--- a/kit/intern/kit_core.c
++++ b/kit/intern/kit_core.c
+@@ -2880,6 +2880,30 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
+   return 0;
+ }
+ 
++static int in_BK_scroll_pixels(BKContext *ctx, int x, int y, int dy, int mods)
++{
++  if ((mods & BK_CTRL) || ctx->modal || ctx->npopups) {
++    return 0;
++  }
++  BKNode *target = hit_all(ctx, x, y);
++  if (!target && ctx->root && y >= ctx->header_h) {
++    target = deepest(ctx->root, x, y);
++  }
++  for (BKNode *n = target; n; n = n->parent) {
++    if (BK_IS_CUSTOM(n)) {
++      return 0; /* custom nodes take the wheel themselves */
++    }
++    if (n->cls == &bk_cls_scroll && NODE_ENABLED(n)) {
++      hide_tooltip(ctx);
++      if (dy) {
++        bk_scroll_view_by(n, dy);
++      }
++      return 1;
++    }
++  }
++  return 0;
++}
++
+ void BK_bind(BKContext *ctx, const char *combo, void *ref)
+ {
+   if (ctx->nkeys == BK_MAX_KEYS) {
+@@ -3322,6 +3346,11 @@ int BK_key(BKContext *ctx, const char *text, const char *keysym, int mods)
+   INPUT_ENTRY(in_BK_key(ctx, text, keysym, mods));
+ }
+ 
++int BK_scroll_pixels(BKContext *ctx, int x, int y, int dy, int mods)
++{
++  INPUT_ENTRY(in_BK_scroll_pixels(ctx, x, y, dy, mods));
++}
++
+ int BK_scroll(BKContext *ctx, int x, int y, float dx, float dy, int mods)
+ {
+   BKNode *t = BK_IS_CUSTOM(ctx->grab) ? ctx->grab : (ctx->modal ? NULL : hit_all(ctx, x, y));
+diff --git a/kit/intern/kit_intern.h b/kit/intern/kit_intern.h
+index a8ef667..8bf90a7 100644
+--- a/kit/intern/kit_intern.h
++++ b/kit/intern/kit_intern.h
+@@ -559,6 +559,8 @@ void bk_theme_env_init(void);
+ extern const BKClass bk_cls_custom;
+ extern const BKClass bk_cls_video; /* image/video.c */
+ #define BK_IS_CUSTOM(n) ((n) && (n)->cls == &bk_cls_custom)
++/* scroll view `n` by dy pixels (positive: towards the top), clamped */
++void bk_scroll_view_by(BKNode *n, int dy);
+ /* Delivers an event (fills x, y relative to the node); returns its result. */
+ int bk_custom_event(BKNode *n, BKCustomEvent *e, int wx, int wy);
+ void bk_custom_frames(BKContext *ctx);       /* BK_render: frame callbacks due */
+diff --git a/kit/intern/kit_widgets.c b/kit/intern/kit_widgets.c
+index 737f2ab..bd4b390 100644
+--- a/kit/intern/kit_widgets.c
++++ b/kit/intern/kit_widgets.c
+@@ -1239,6 +1239,11 @@ static int scroll_drag(BKNode *n, BKEvent *e)
+   return 1;
+ }
+ 
++void bk_scroll_view_by(BKNode *n, int dy)
++{
++  scroll_set(n, n->scroll - dy);
++}
++
+ static int scroll_wheel(BKNode *n, BKEvent *e)
+ {
+   if (EV_CTRL(e)) {
+diff --git a/kit/intern/kit_window_cocoa.m b/kit/intern/kit_window_cocoa.m
+index 1c26c73..ac37fe5 100644
+--- a/kit/intern/kit_window_cocoa.m
++++ b/kit/intern/kit_window_cocoa.m
+@@ -138,6 +138,7 @@ struct BKWindow {
+   NSWindowStyleMask style;    /* framed style ("override" 0 restores it) */
+   NSEventModifierFlags flags; /* modifiers at the last flagsChanged */
+   double scroll_x, scroll_y;  /* trackpad scroll not yet sent (points) */
++  double pscroll_y;           /* trackpad scroll not yet sent to a scroll view (pixels) */
+   BKCocoaTimer timers[MAX_TIMERS];
+   struct BKWindow *next;
+ };
+@@ -526,7 +527,7 @@ static CGColorSpaceRef srgb(void)
+     return;
+   }
+   if (phase == NSEventPhaseBegan) {
+-    bk->scroll_x = bk->scroll_y = 0.0;
++    bk->scroll_x = bk->scroll_y = bk->pscroll_y = 0.0;
+   }
+   /* 10.7+ precise deltas, in points (GHOST: scrollingDeltaX / Y) */
+   CGFloat dx = [ev scrollingDeltaX], dy = [ev scrollingDeltaY];
+@@ -535,7 +536,23 @@ static CGColorSpaceRef srgb(void)
+     dy *= BK_SCROLL_STEP;
+   }
+   bk->scroll_x += dx;
+-  bk->scroll_y += dy;
++  /* a scroll view under the pointer follows the fingers pixel for pixel and
++   * stops at its ends; anything else gets wheel notches */
++  bk->pscroll_y += dy * bk->px;
++  const int py = (int)bk->pscroll_y;
++  if (dy != 0.0 && BK_scroll_pixels(bk->ctx, x, y, py, mods)) {
++    if (bk) {
++      bk->pscroll_y -= py;
++      bk->scroll_y = 0.0;
++    }
++    dy = 0.0;
++  }
++  else if (bk) {
++    bk->pscroll_y = 0.0;
++  }
++  if (bk) {
++    bk->scroll_y += dy;
++  }
+   for (int i = 0; i < 8 && bk && fabs(bk->scroll_y) >= BK_SCROLL_STEP; i++) {
+     const int d = bk->scroll_y > 0.0 ? 1 : -1;
+     bk->scroll_y -= d * BK_SCROLL_STEP;

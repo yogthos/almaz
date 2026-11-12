@@ -609,9 +609,6 @@
    [:tabs {:items ["Enhance" "Color" "Dimensions"] :stretch true
            :current (index-of tabs @s/tab*)
            :on-change #(act/set-tab! (nth tabs (long %)))}
-    ;; one row's natural height (not the kit's five): the window's content
-    ;; never outgrows it, so a wheel past a page's end doesn't scroll the
-    ;; whole window instead
-    [:scroll {:rows 1} [enhance-page]]
-    [:scroll {:rows 1} [color-page]]
-    [:scroll {:rows 1} [dimensions-page]]]])
+    [:scroll {} [enhance-page]]
+    [:scroll {} [color-page]]
+    [:scroll {} [dimensions-page]]]])
