@@ -367,7 +367,6 @@
 
 ;; ---- the modifier (modifier.cpp, mod-*.cpp) --------------------------------------
 (def ^:private full-frame-diag (Math/hypot 36.0 24.0))
-(def ^:private newton-eps 0.00001)
 
 (defn- hugin-scaling
   "real focal / the calibration's hugin unit (half its sensor's short side;
@@ -454,17 +453,24 @@
 
 (defn- transformed-distance
   "GetTransformedDistance: the corrected radius along `angle` that distorts
-   onto the photo's edge (Newton), or -1 when it doesn't converge."
-  [{:keys [distortion] :as m} dist angle]
+   onto the photo's edge (Newton), or -1 when it doesn't converge.
+
+   Unlike lensfun, which stops within 0.001 (100 x NEWTON_EPS) in units of
+   the focal length, this stops within 0.01 px: at long focal lengths the
+   whole half diagonal is only a few hundredths of a unit, so lensfun's
+   tolerance is percent of the frame and leaves the corners unfilled (a 480
+   mm lens: 2%)."
+  [{:keys [distortion norm-scale] :as m} dist angle]
   (let [sa (Math/sin angle) ca (Math/cos angle)
+        tol (* 0.01 norm-scale)
         f (fn [ru] (residual m (distort distortion [(* ca ru) (* sa ru)])))]
-    (loop [ru dist dx 0.0001 countdown 50]
+    (loop [ru dist dx (* 0.1 norm-scale) countdown 50]
       (let [rd (f ru)]
         (cond
-          (< (* -100 newton-eps) rd (* 100 newton-eps)) ru
+          (< (- tol) rd tol) ru
           (zero? countdown) -1.0
           :else (let [rd1 (f (+ ru dx))]
-                  (if (< (Math/abs (- rd1 rd)) 0.00001)
+                  (if (< (Math/abs (- rd1 rd)) (* 1e-4 tol))
                     (recur ru (* 2 dx) (dec countdown))
                     (recur (- ru (/ rd (/ (- rd1 rd) dx))) dx (dec countdown)))))))))
 

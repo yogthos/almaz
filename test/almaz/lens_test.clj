@@ -114,6 +114,16 @@
             [x y] (lens/distort (:distortion mm) (mapv #(* (/ corner s) %) [(Math/cos (Math/atan2 3999 5999)) (Math/sin (Math/atan2 3999 5999))]))]
         (is (<= (Math/hypot x y) (* 1.0001 corner)))))))
 
+(deftest auto-scaling-long-lenses
+  (testing "the frame is filled at 480 mm too: no corner reads outside the photo"
+    (let [p (lens/plan {:w 8280 :h 5520 :exif nikon} {:dist? true :tca? true :autofill? true})
+          [cx cy] (:center p)
+          corner (Math/hypot cx cy)
+          k (fn [ch r] (let [t (* (/ r (:rmax p)) (dec lens/table-size)) i (long t)]
+                         (nth (nth (:k p) ch) i)))]
+      (doseq [ch [0 1 2]]
+        (is (<= (* (k ch corner) cx) (+ cx 0.5)) (str "channel " ch))))))
+
 (deftest lensfun-plans
   (let [p (lens/plan {:w 8280 :h 5520 :exif nikon} {:dist? true :tca? true :vig? true :autofill? true})
         [kr kg kb] (:k p)]
