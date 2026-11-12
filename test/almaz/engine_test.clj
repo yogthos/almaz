@@ -177,3 +177,19 @@
              (eng/lens-opts {:lens-method :lensfun :lens-dist true :lens-tca false :lens-vig true
                              :lens-fill true :lens-id "X"}))))
     (doseq [i [base out]] (px/free-image! i))))
+
+(deftest focus-filter
+  (testing "tiles grow and overlap with the reach of the blur or the clarity radius"
+    (is (= [256 16] ((juxt :block :overlap) (eng/focus-op {:focus-clarity 0.0 :focus-blur 2.0}))))
+    (is (= [1024 240] ((juxt :block :overlap) (eng/focus-op {:focus-clarity 0.3 :focus-radius 80.0 :focus-blur 0.0}))))
+    (is (= [2048 608] ((juxt :block :overlap) (eng/focus-op {:focus-clarity 0.0 :focus-blur 200.0})))))
+  (testing "blurring the whole image matches one gaussian over it, tiles and all"
+    (let [w 300 h 200
+          base (filled w h (fn [x y] [(if (< x 150) 0.2 0.8) (/ y 199.0) 0.5]))
+          out (px/new-image w h)
+          op (eng/focus-op {:focus-blur 8.0})]
+      (is (= :done (eng/process! {:base base :below [] :out out :op op})))
+      (let [[r] (px/pixel out 150 100) [r0] (px/pixel out 100 100)]
+        (is (< 0.4 r 0.6) "the edge is smeared")
+        (is (< (Math/abs (- r0 0.2)) 0.01) "far from it, unchanged"))
+      (doseq [i [base out]] (px/free-image! i)))))

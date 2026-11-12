@@ -56,7 +56,7 @@
    [:crop-w      :int     :nullable]
    [:crop-h      :int     :nullable]
    ;; the crop's constraint (almaz.crop) and the custom aspect ratio
-   [:constrain   :keyword :default :free]
+   [:constrain   :keyword :default :original]
    [:ratio-w     :real    :default 3.0 :check [> :ratio-w 0.0]]
    [:ratio-h     :real    :default 2.0 :check [> :ratio-h 0.0]]])
 
@@ -86,14 +86,18 @@
    ;; from the surroundings (almaz.engine/repair!)
    :repair    {:label "Repair" :order 2 :tab :enhance :mask-input true :mask-fill 0.0 :feather 3.0
                :params {:model :classic}}
-   :light     {:label "Light" :order 3 :tab :color :live true
+   ;; Focus: clarity (local contrast) and gaussian blur, RawTherapee's; with
+   ;; a mask, e.g. the background defocused or the subject crisper
+   :focus     {:label "Focus" :order 3 :tab :enhance :opacity 1.0
+               :params {:model :classic :focus-clarity 0.0 :focus-radius 80.0 :focus-blur 0.0}}
+   :light     {:label "Light" :order 4 :tab :color :live true
                :params (assoc (zipmap tone-keys (repeat 0.0)) :model :classic)}
-   :levels    {:label "Levels" :order 4 :tab :color :live true :params (colour-params :levels)}
-   :balance   {:label "Color Balance" :order 5 :tab :color :live true :params (colour-params :balance)}
-   :hsl       {:label "Hue & Saturation" :order 6 :tab :color :live true :params (colour-params :hsl)}
-   :selective {:label "Selective Color" :order 7 :tab :color :live true :params (colour-params :selective)}
-   :bw        {:label "Black & White" :order 8 :tab :color :live true :params (colour-params :bw)}
-   :vignette  {:label "Vignette" :order 9 :tab :color :live true :params (colour-params :vignette)}})
+   :levels    {:label "Levels" :order 5 :tab :color :live true :params (colour-params :levels)}
+   :balance   {:label "Color Balance" :order 6 :tab :color :live true :params (colour-params :balance)}
+   :hsl       {:label "Hue & Saturation" :order 7 :tab :color :live true :params (colour-params :hsl)}
+   :selective {:label "Selective Color" :order 8 :tab :color :live true :params (colour-params :selective)}
+   :bw        {:label "Black & White" :order 9 :tab :color :live true :params (colour-params :bw)}
+   :vignette  {:label "Vignette" :order 10 :tab :color :live true :params (colour-params :vignette)}})
 
 (defn default-opacity
   "The strength a `kind` layer starts at: full strength is too much for the
@@ -140,8 +144,14 @@
     [:lens-vig    :bool    :default true]
     [:lens-fill   :bool    :default true]
     [:lens-id     :text    :nullable]
+    ;; focus: clarity -1..1, its radius and the blur's sigma in source px
+    [:focus-clarity :real  :default 0.0 :check [:and [>= :focus-clarity -1.0] [<= :focus-clarity 1.0]]]
+    [:focus-radius  :real  :default 80.0 :check [:and [>= :focus-radius 1.0] [<= :focus-radius 400.0]]]
+    [:focus-blur    :real  :default 0.0 :check [:and [>= :focus-blur 0.0] [<= :focus-blur 200.0]]]
     [:feather     :real    :default 24.0]
     [:mask-rev    :int     :default 0]
+    ;; what the mask was set to (almaz.segment/selections); :custom once painted
+    [:mask-sel    :keyword :default :all]
     [:done-sig    :text    :nullable]        ; the signature its output matches
     [:partial-rev :int     :nullable]        ; mask-rev of a run that skipped tiles
     [:img         :int     :nullable]        ; native handles

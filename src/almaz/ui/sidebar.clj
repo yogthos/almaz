@@ -11,6 +11,7 @@
             [almaz.geom :as g]
             [almaz.lens :as lens]
             [almaz.pixels :as px]
+            [almaz.segment :as seg]
             [almaz.state :as s]
             [almaz.tables :as tables]
             [almaz.ui.units :refer [px]]
@@ -154,32 +155,43 @@
      (when skey (strip skey f))]))
 
 ;; ---- mask ------------------------------------------------------------------------
-;; A section of its filter's panel, under a rule: Off / Paint / Erase, and the
-;; brush and mask settings while painting or erasing that layer.
+;; A section of its filter's panel, under a rule: where the filter applies, from
+;; the selection menu (almaz.segment: the whole image, what a model finds, or
+;; Custom, painted), its feather, and the brush while it is Custom.
 (defn- mask-tools [layer tool]
   (let [lid (:id layer)
-        active (when (= lid (:layer tool)) (:mode tool))]
+        sel (or (:mask-sel layer) :all)
+        active (when (= lid (:layer tool)) (:mode tool))
+        req @s/mask-req*
+        finding (when (= lid (:layer req)) (:sel req))]
     [:vbox {:key :mask :spacing 4}
      [:separator {:key :rule}]
-     [:hbox {:key :mode :spacing 4}
+     [:hbox {:key :sel :spacing 4}
       [:label {:text "Mask" :bold 1 :weight 0 :reqwidth (px 52)}]
-      [:enum {:items ["Off" "Paint" "Erase"] :weight 1
-              :value (case active :paint 1 :erase 2 0)
-              :on-change #(act/set-tool! ([:pan :paint :erase] (long %)) lid)}]]
-     (when active
+      [:dropdown {:items seg/labels :weight 1 :value (index-of seg/keys* sel)
+                  :on-change #(act/select-mask! lid (nth seg/keys* (long %)))}]]
+     (when finding
+       [:label {:key :finding :text (str (seg/describe finding) "…") :text-color [1 0.85 0.4 1]}])
+     [:slider {:key :feather :label "Feather" :min 0 :max 200 :integer 1 :value (long (:feather layer))
+               :on-change #(act/set-feather! lid (double %))}]
+     [:hbox {:key :edit :align 1}
+      [:button {:text "Invert" :on-click #(act/mask-invert! lid)}]]
+     (when (= :custom sel)
        [:vbox {:key :brush :spacing 4}
-        [:slider {:label "Brush size" :min 4 :max 1500 :integer 1 :value (long (:radius tool))
-                  :on-change #(swap! s/tool* assoc :radius (double %))}]
-        [:slider {:label "Hardness" :min 0 :max 100 :integer 1 :value (pct (:hardness tool))
-                  :on-change #(swap! s/tool* assoc :hardness (/ (double %) 100.0))}]
-        [:slider {:label "Feather" :min 0 :max 200 :integer 1 :value (long (:feather layer))
-                  :on-change #(act/set-feather! lid (double %))}]
-        [:hbox {:align 1}
-         [:button {:text "Fill" :on-click #(act/mask-fill! lid 1.0)}]
-         [:button {:text "Clear" :on-click #(act/mask-fill! lid 0.0)}]
-         [:button {:text "Invert" :on-click #(act/mask-invert! lid)}]]
-        [:checkbox {:label "Show mask while painting" :value (if (:show-mask tool) 1 0)
-                    :on-change #(swap! s/tool* assoc :show-mask (pos? %))}]])]))
+        [:enum {:items ["Off" "Paint" "Erase"]
+                :value (case active :paint 1 :erase 2 0)
+                :on-change #(act/set-tool! ([:pan :paint :erase] (long %)) lid)}]
+        (when active
+          [:vbox {:key :brush-settings :spacing 4}
+           [:slider {:label "Brush size" :min 4 :max 1500 :integer 1 :value (long (:radius tool))
+                     :on-change #(swap! s/tool* assoc :radius (double %))}]
+           [:slider {:label "Hardness" :min 0 :max 100 :integer 1 :value (pct (:hardness tool))
+                     :on-change #(swap! s/tool* assoc :hardness (/ (double %) 100.0))}]
+           [:hbox {:align 1}
+            [:button {:text "Fill" :on-click #(act/mask-fill! lid 1.0)}]
+            [:button {:text "Clear" :on-click #(act/mask-fill! lid 0.0)}]]
+           [:checkbox {:label "Show mask while painting" :value (if (:show-mask tool) 1 0)
+                       :on-change #(swap! s/tool* assoc :show-mask (pos? %))}]])])]))
 
 ;; ---- enhance ---------------------------------------------------------------------
 (defn- layer-status [doc layer sig job]
@@ -209,6 +221,19 @@
                   :on-change #(act/set-param! :sharpen :radius (double %))}]
         [:slider {:label "Amount" :min 0 :max 300 :integer 1 :value (pct amount)
                   :on-change #(act/set-param! :sharpen :amount (/ (double %) 100.0))}]])]))
+
+;; ---- focus -----------------------------------------------------------------------
+;; Clarity (local contrast) sharpens or softens the look; Blur defocuses. With
+;; a mask (Background, say) they work on just part of the photo.
+(defn- focus-settings [layer]
+  [:vbox {:spacing 4}
+   [:slider {:key :clarity :label "Clarity" :min -100 :max 100 :integer 1 :value (pct (:focus-clarity layer))
+             :on-change #(act/set-param! :focus :focus-clarity (/ (double %) 100.0))}]
+   [:slider {:key :radius :label "Clarity radius" :min 1 :max 400 :integer 1 :value (long (:focus-radius layer))
+             :on-change #(act/set-param! :focus :focus-radius (double %))}]
+   [:slider {:key :blur :label "Blur" :min 0 :max 200 :precision 1 :value (double (:focus-blur layer))
+             :on-change #(act/set-param! :focus :focus-blur (double %))}]
+   [:label {:key :hint :text "Pick Background under Mask to defocus it." :text-color [1 1 1 0.55]}]])
 
 ;; ---- repair ----------------------------------------------------------------------
 ;; The Repair brush paints the layer's mask; the worker fills what it covers
@@ -444,6 +469,7 @@
         :denoise (denoise-settings layer)
         :sharpen (sharpen-settings (assoc ctx :layer layer))
         :repair (repair-settings layer tool)
+        :focus (focus-settings layer)
         :light (light-settings layer)
         :levels (levels-settings doc layer tool)
         :balance (balance-settings layer)

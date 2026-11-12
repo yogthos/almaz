@@ -138,6 +138,16 @@ int almz_mask_regions(const AlmzMask *m, float thr, int margin, int32_t *rects, 
 /* 1 where the mask is over `thr` at the pixels of the rect (x0, y0, w, h). */
 void almz_mask_hole(const AlmzMask *m, int x0, int y0, int w, int h, float thr, uint8_t *out);
 
+/* -- segmentation (automatic masks) --------------------------------------- */
+/* The composite of base + layers stretched over n x n, as planar NCHW floats
+ * (v - mean[c]) / std[c] of the 0..1 values (mean/std may be NULL: 0 / 1):
+ * a segmentation model's input. 0 on success. */
+int almz_seg_input(const AlmzImg *base, const AlmzLayer *layers, int nlayers, int n,
+                   const float *mean, const float *std, float *out);
+/* Set the mask's paint from a pw x ph map covering the whole image
+ * (bilinear; `logits`: pass it through a sigmoid first), then feather. */
+void almz_mask_set(AlmzMask *m, const float *prob, int pw, int ph, int logits);
+
 /* -- repair ---------------------------------------------------------------- */
 /* Fill the pixels where hole != 0 of a planar RGB (0..1) w x h image from
  * the rest of it (inpaint.c: PatchMatch texture, healed lighting) into
@@ -192,6 +202,14 @@ void almz_tile_write(AlmzImg *dst, const float *src, int tw, int th, int x0, int
                      int ramp_l, int ramp_t, int ramp_r, int ramp_b);
 /* Classic unsharp mask, in place on a planar tile. */
 void almz_tile_unsharp(float *t, int tw, int th, float sigma, float amount);
+/* Gaussian blur of a planar tile, in place (RawTherapee's recursive
+ * Young-van Vliet filter; sigma in pixels, < 0.25 does nothing). */
+void almz_tile_gauss(float *t, int tw, int th, float sigma);
+/* Local contrast (RawTherapee's, i.e. clarity) of a planar tile, in place:
+ * L* + (L* - blur_sigma(L*)) * amount, the boost scaled by `light` where it
+ * brightens and `dark` where it darkens; colour follows the luminance.
+ * A negative amount softens. */
+void almz_tile_local_contrast(float *t, int tw, int th, float sigma, float amount, float dark, float light);
 /* Put back `amount` of the input's fine detail the model removed:
  * out += amount * (highpass(in) - highpass(out)). */
 void almz_tile_detail(float *out, const float *in, int tw, int th, float sigma, float amount);

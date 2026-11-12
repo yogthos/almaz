@@ -44,6 +44,9 @@
   [:pointer :pointer :int32 :int32 :int32 :int32 :int32 :pointer] :void :blocking)
 (ffi/defcfn tile-write*     "almz_tile_write"
   [:pointer :pointer :int32 :int32 :int32 :int32 :int32 :int32 :int32 :int32] :void :blocking)
+(ffi/defcfn tile-gauss*     "almz_tile_gauss"     [:pointer :int32 :int32 :float] :void :blocking)
+(ffi/defcfn tile-local-contrast* "almz_tile_local_contrast"
+  [:pointer :int32 :int32 :float :float :float :float] :void :blocking)
 (ffi/defcfn tile-unsharp*   "almz_tile_unsharp"   [:pointer :int32 :int32 :float :float] :void :blocking)
 (ffi/defcfn tile-detail*    "almz_tile_detail"
   [:pointer :pointer :int32 :int32 :float :float] :void :blocking)
@@ -51,6 +54,9 @@
 (ffi/defcfn lens-warp*      "almz_lens_warp"
   [:pointer :pointer :double :double :double :int32 :pointer :double :pointer :int32 :int32] :void :blocking)
 (ffi/defcfn sony-corrections* "almz_sony_corrections" [:pointer :pointer :pointer :pointer :int32] :int32 :blocking)
+(ffi/defcfn seg-input*      "almz_seg_input"
+  [:pointer :pointer :int32 :int32 :pointer :pointer :pointer] :int32 :blocking)
+(ffi/defcfn mask-set*       "almz_mask_set"       [:pointer :pointer :int32 :int32 :int32] :void :blocking)
 (ffi/defcfn estimate*       "almz_estimate"       [:pointer :pointer :pointer] :void :blocking)
 
 (ffi/defcfn load*           "almz_load"           [:pointer :pointer] :pointer :blocking)
@@ -357,6 +363,17 @@
   [t size {:keys [sigma amount]}]
   (tile-unsharp* t (int size) (int size) (float sigma) (float amount)))
 
+(defn gauss!
+  "Gaussian blur of a planar w x h tile, in place (sigma in px)."
+  [t w h sigma]
+  (tile-gauss* t (int w) (int h) (float sigma)))
+
+(defn local-contrast!
+  "Local contrast (clarity) of a planar w x h tile, in place: RawTherapee's,
+   blur radius `sigma` px; a negative `amount` softens."
+  [t w h {:keys [sigma amount dark light] :or {dark 1.0 light 1.0}}]
+  (tile-local-contrast* t (int w) (int h) (float sigma) (float amount) (float dark) (float light)))
+
 (defn detail!
   "Put back `amount` of the input's fine detail into the output tile."
   [out in size {:keys [sigma amount]}]
@@ -388,6 +405,22 @@
       (when (pos? (sony-corrections* (ffi/string->ptr a path) d c v (int sony-cap)))
         (let [rd #(vec (for [i (range sony-cap)] (long (ffi/read % :int32 (* 4 i)))))]
           {:distortion (rd d) :ca (rd c) :vignetting (rd v)})))))
+
+;; ---- segmentation ------------------------------------------------------------
+(defn seg-input!
+  "The composite of base + layers stretched over n x n into `out` (n*n*3
+   planar floats), normalized (v - mean) / std per channel (nil: as is)."
+  [base layers n {:keys [mean std]} out]
+  (with-open [a (ffi/confined-arena)]
+    (seg-input* base (write-layers a layers) (int (count layers)) (int n)
+                (if mean (floats a (float-array mean)) ffi/null)
+                (if std (floats a (float-array std)) ffi/null) out)))
+
+(defn mask-set!
+  "Set mask `m` from a w x h map at native `prob` covering the whole image
+   (through a sigmoid first when `logits?`), then feather it."
+  [m prob w h logits?]
+  (mask-set* m prob (int w) (int h) (if logits? 1 0)))
 
 ;; ---- estimators --------------------------------------------------------------
 (defn estimate

@@ -182,6 +182,27 @@ native/tools/venv/bin/python native/tools/export_nafnet.py \
 The first run on macOS compiles each model for Core ML (cached in
 `~/Library/Caches/almaz/coreml`).
 
+The automatic masks (Subject, Background, Portrait, Landscape, Sky) use two
+more models, fetched the first time one is picked:
+
+- BiRefNet-lite (ZhengPeng7, MIT), the ONNX export onnx-community publishes,
+  downloaded from Hugging Face: salient object (Subject, Background).
+- UperNet + ConvNeXt-tiny (openmmlab, MIT) on ADE20K, exported with its
+  classes summed into sky, person and landscape probabilities (Sky, Portrait,
+  Landscape). It goes on the `models-v2` release; to export it yourself:
+
+```sh
+native/tools/venv/bin/pip install "transformers<5"
+native/tools/venv/bin/python native/tools/export_scene_seg.py models/almaz/upernet-convnext-tiny-512.onnx
+```
+
+Lens correction uses the [lensfun](https://github.com/lensfun/lensfun)
+database (CC-BY-SA 3.0), converted into `src/almaz/lens/db.clj`:
+
+```sh
+native/tools/venv/bin/python native/tools/lensfun_to_clj.py ~/src/lensfun/data/db
+```
+
 > The Qualcomm AI Hub NAFNet exports used earlier are **not** used: both blow
 > up (outputs in the hundreds) on real photos. Also note the models expect a
 > demosaiced image: LibRaw's half-size decode leaves per-pixel independent

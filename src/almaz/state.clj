@@ -28,6 +28,7 @@
 (defonce pixels-rev* (r/atom 0))  ; native pixels changed (tiles written, masks painted)
 (defonce cursor* (r/atom nil))    ; pointer over the canvas [x y], nil outside
 (defonce space* (r/atom false))   ; Space held over the canvas: drag pans
+(defonce mask-req* (r/atom nil))   ; {:doc :layer :sel} an automatic mask for the worker
 (defonce export-req* (atom nil))  ; {:doc :path :format :quality} for the worker
 
 ;; ---- worker wake-up ----------------------------------------------------------

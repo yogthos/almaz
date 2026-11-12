@@ -570,3 +570,51 @@
         (is (pos? (first (px/pixel black 5 10))))
         (px/free-image! black)))
     (doseq [i [src dst]] (px/free-image! i))))
+
+(defn- tile-of
+  "A planar 3 x w x h float tile with every channel (f x y)."
+  [w h f]
+  (let [p (ffi/alloc (* 4 3 w h))]
+    (dotimes [c 3] (dotimes [y h] (dotimes [x w] (ffi/write p :float (float (f x y)) (* 4 (+ (* c w h) (* y w) x))))))
+    p))
+
+(defn- tile-at [p w h c x y] (double (ffi/read p :float (* 4 (+ (* c w h) (* y w) x)))))
+
+(deftest gaussian-blur
+  (let [w 101 h 101]
+    (testing "a flat tile stays flat"
+      (let [t (tile-of w h (constantly 0.4))]
+        (px/gauss! t w h 5.0)
+        (is (close? 1e-4 0.4 (tile-at t w h 0 0 0)))
+        (is (close? 1e-4 0.4 (tile-at t w h 2 50 50)))
+        (ffi/free t)))
+    (testing "an impulse spreads with the given sigma and keeps its mass"
+      (let [t (tile-of w h (fn [x y] (if (= [x y] [50 50]) 1.0 0.0)))
+            sigma 6.0]
+        (px/gauss! t w h sigma)
+        (let [vals (for [y (range h) x (range w)] [x y (tile-at t w h 1 x y)])
+              mass (reduce + (map last vals))
+              var-x (/ (reduce + (map (fn [[x _ v]] (* v (Math/pow (- x 50) 2))) vals)) mass)]
+          (is (close? 0.02 1.0 mass))
+          (is (close? 0.15 1.0 (/ (Math/sqrt var-x) sigma)))
+          (is (close? 1e-6 (tile-at t w h 1 45 50) (tile-at t w h 1 55 50)) "symmetric"))
+        (ffi/free t)))))
+
+(deftest local-contrast
+  (let [w 120 h 40]
+    (testing "a flat tile has no local contrast to change"
+      (let [t (tile-of w h (constantly 0.5))]
+        (px/local-contrast! t w h {:sigma 10.0 :amount 0.8})
+        (is (close? 1e-4 0.5 (tile-at t w h 0 60 20)))
+        (ffi/free t)))
+    (testing "positive amount steepens an edge, negative softens it"
+      (let [edge (fn [x _] (if (< x 60) 0.3 0.6))
+            up (tile-of w h edge) down (tile-of w h edge)]
+        (px/local-contrast! up w h {:sigma 10.0 :amount 0.8})
+        (px/local-contrast! down w h {:sigma 10.0 :amount -0.5})
+        (is (< (tile-at up w h 0 57 20) 0.3) "dark side darker")
+        (is (> (tile-at up w h 0 62 20) 0.6) "bright side brighter")
+        (is (> (tile-at down w h 0 57 20) 0.3))
+        (is (< (tile-at down w h 0 62 20) 0.6))
+        (is (close? 1e-3 0.3 (tile-at up w h 0 5 20)) "far from the edge: unchanged")
+        (ffi/free up) (ffi/free down)))))

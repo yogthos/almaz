@@ -43,14 +43,30 @@
             (when (pos? detail)
               (px/detail! out in block {:sigma 1.5 :amount detail})))}))
 
+(defn focus-op
+  "Clarity (local contrast at `radius` px) then gaussian blur (sigma `blur`
+   px) over tiles large enough, with enough overlap, for both."
+  [{:keys [focus-clarity focus-radius focus-blur]}]
+  (let [clarity (double (or focus-clarity 0.0)) radius (double (or focus-radius 80.0))
+        blur (double (or focus-blur 0.0))
+        reach (max (if (zero? clarity) 0.0 radius) blur)
+        overlap (max 16 (* 16 (long (Math/ceil (/ (* 3.0 reach) 16)))))
+        block (cond (<= overlap 64) 256 (<= overlap 160) 512 (<= overlap 320) 1024 :else 2048)]
+    {:block block :overlap overlap
+     :run (fn [in out n]
+            (ffi/copy in out (* 4 n))
+            (when-not (zero? clarity) (px/local-contrast! out block block {:sigma radius :amount clarity}))
+            (when (pos? blur) (px/gauss! out block block blur)))}))
+
 (defn op-for
   "The tile operation for a layer row: {:block :overlap :run (fn [in out n])},
    where `run` turns the planar float tile at `in` into `out` (n floats).
    `session` is the loaded model session (almaz.models/session) for AI filters."
-  [{:keys [kind model detail amount radius]} session]
+  [{:keys [kind model detail amount radius] :as layer} session]
   (case [kind model]
     [:denoise :ai] (model-op session (or detail 0.0))
     [:sharpen :ai] (model-op session 0.0)
+    [:focus :classic] (focus-op layer)
     [:sharpen :classic]
     (let [block 256
           radius (double (or radius 1.5))]

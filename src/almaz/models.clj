@@ -22,6 +22,7 @@
 (ffi/defcfn setenv* "setenv" [:string :string :int32] :int32)
 
 (def ^:private release "https://github.com/yogthos/almaz/releases/download/models-v1/")
+(def ^:private release-v2 "https://github.com/yogthos/almaz/releases/download/models-v2/")
 
 (def registry
   {:denoise {:label "NAFNet SIDD" :file "nafnet-sidd-512.onnx"
@@ -31,7 +32,22 @@
    :sharpen {:label "NAFNet REDS" :file "nafnet-reds-512.onnx"
              :url (str release "nafnet-reds-512.onnx") :size 272001345
              :sha256 "d7efe9457c3e164cda36f3b6c166c96f90ee10b05cf92dc141c16dabbf9f4a08"
-             :inputs ["image"] :outputs ["output"] :block 512 :overlap 64}})
+             :inputs ["image"] :outputs ["output"] :block 512 :overlap 64}
+   ;; automatic masks (almaz.segment). Subject: BiRefNet-lite (ZhengPeng7,
+   ;; MIT) as onnx-community publishes it, logits for the salient object.
+   :subject {:label "BiRefNet lite" :file "birefnet-lite-1024.onnx"
+             :url "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/main/onnx/model.onnx"
+             :size 224005088
+             :sha256 "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
+             :inputs ["input_image"] :outputs ["output_image"] :block 1024 :channels 1 :logits true
+             :mean [0.485 0.456 0.406] :std [0.229 0.224 0.225]}
+   ;; Scene: UperNet + ConvNeXt-tiny (openmmlab, MIT) on ADE20K, exported by
+   ;; native/tools/export_scene_seg.py with its classes summed into sky,
+   ;; person and landscape probabilities.
+   :scene   {:label "UperNet ConvNeXt" :file "upernet-convnext-tiny-512.onnx"
+             :url (str release-v2 "upernet-convnext-tiny-512.onnx") :size 238456147
+             :sha256 "255dca951c61301f38d6097508f5b0e30aaf79f4930b2c9ffe4e88ecf5461920"
+             :inputs ["image"] :outputs ["groups"] :block 512 :channels 3}})
 
 (defn model-dir
   "Where models live. Given {:env :os :home :xdg :dev?}: ALMAZ_MODELS when

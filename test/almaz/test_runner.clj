@@ -7,7 +7,7 @@
 (def pure '[almaz.lens-test almaz.tile-test almaz.view-test almaz.strip-test almaz.doc-test almaz.autopilot-test almaz.geom-test almaz.color-test almaz.history-test
             almaz.ep-test])
 
-(def native '[almaz.download-test almaz.pixels-test almaz.raw-test almaz.ort-test almaz.coreml-test
+(def native '[almaz.segment-test almaz.download-test almaz.pixels-test almaz.raw-test almaz.ort-test almaz.coreml-test
               almaz.engine-test almaz.cli-test almaz.worker-test])
 
 (defmethod t/report :error [m]

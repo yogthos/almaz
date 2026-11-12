@@ -22,7 +22,7 @@
 (def layer-keys
   "What the user edits on a layer: every kind's settings, the switch,
    strength and feather."
-  (into [:enabled :opacity :feather]
+  (into [:enabled :opacity :feather :mask-sel]
         (distinct (mapcat (comp keys :params val) d/kinds))))
 
 (defn snapshot
