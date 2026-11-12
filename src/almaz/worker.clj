@@ -18,6 +18,7 @@
             [almaz.loading :as load]
             [almaz.models :as models]
             [almaz.pixels :as px]
+            [almaz.segment :as seg]
             [almaz.state :as s]
             [almaz.view :as v]))
 
@@ -110,8 +111,12 @@
         lid (:id layer)
         t0 (s/now)
         cancelled? #(not= sig (live-sig id lid))
-        result (if (= :repair (:kind layer))
-                 (repair-layer! (assoc job :cancelled? cancelled?))
+        result (case (:kind layer)
+                 :repair (repair-layer! (assoc job :cancelled? cancelled?))
+                 :lens (eng/lens! {:base base :below below :out out
+                                   :plan (eng/lens-plan @s/db* dc layer)
+                                   :progress (report-progress label) :cancelled? cancelled?})
+                 :focus (eng/focus! {:base base :below below :out out :layer layer})
                  (eng/process! {:base base :below below :out out :mask (:mask layer)
                                 :op (eng/op-for layer (session-for layer label))
                                 :focus (focus dc)
@@ -136,6 +141,45 @@
                    :input (nth (d/input-signatures @s/db* id) idx)
                    :label (get-in d/kinds [(:kind layer) :label])})
       (finally (life/released!)))))
+
+;; ---- automatic masks -----------------------------------------------------------
+(defn- seg-input
+  "What the segmentation models see: the base, lens-corrected when the lens
+   layer is on and done, and the signature naming it."
+  [{:keys [id]}]
+  (let [db @s/db*
+        ls (d/layers db id)
+        sigs (d/signatures db id)
+        lens (first (keep-indexed (fn [i l] (when (and (= :lens (:kind l)) (:enabled l) (:img l)
+                                                       (= (nth sigs i) (:done-sig l)))
+                                              [l (nth sigs i)]))
+                                  ls))]
+    {:layers (if lens [(first lens)] []) :sig (second lens)}))
+
+(defn- mask!
+  "Set a layer's mask to an automatic selection (almaz.segment)."
+  [{:keys [doc layer sel] :as req} {:keys [base] :as dc}]
+  (try
+    (let [{:keys [model]} (seg/source sel)
+          {:keys [layers sig]} (seg-input dc)
+          refs (eng/layer-refs dc layers)
+          m (:mask (s/layer layer))]
+      (when m
+        (life/using! (concat [base m] (map :img layers)))
+        (try
+          (models/ensure-model! model (fn [got total]
+                                        (reset! s/job* {:label (str "Downloading the " (get-in models/registry [model :label])
+                                                                    " model (" (mb got) "/" (mb (or total 0)) " MB)")
+                                                        :done got :total total})))
+          (reset! s/job* {:label (str (seg/describe sel) "…")})
+          (let [out (seg/output model [base sig] base refs)]
+            ;; a newer request (or the layer gone) supersedes this one
+            (when (and (= req @s/mask-req*) (= m (:mask (s/layer layer))))
+              (seg/apply! m sel out)
+              (s/edit! doc d/bump-mask layer)
+              (s/bump-pixels!)))
+          (finally (life/released!)))))
+    (finally (swap! s/mask-req* #(if (= % req) nil %)))))
 
 ;; ---- export --------------------------------------------------------------------
 (defn- export!
@@ -164,6 +208,11 @@
 (defn- load-task [cur]
   (when (#{:pending :thumb} (:status cur)) [:load cur]))
 
+(defn- mask-task [cur]
+  (let [req @s/mask-req*]
+    (when (and req (= (:doc req) (:id cur)) (= :ready (:status cur)))
+      [:mask req cur])))
+
 (defn- process-task [cur]
   (when-let [i (and (= :ready (:status cur)) (d/next-stale @s/db* (:id cur)))]
     (when (> (- (s/now) (:edited-at cur)) settle-ms)
@@ -184,12 +233,13 @@
   "The next job, by priority (see the namespace doc)."
   []
   (let [cur (s/current-doc)]
-    (or (when cur (or (export-task cur) (load-task cur) (process-task cur) (rethumb-task cur)))
+    (or (when cur (or (export-task cur) (load-task cur) (mask-task cur) (process-task cur) (rethumb-task cur)))
         (thumb-task))))
 
 (defn- run-task! [[kind a b]]
   (case kind
     :export  (export! a b)
+    :mask    (mask! a b)
     :load    (load/load-doc! a)
     :process (process-layer! a b)
     :rethumb (load/rethumb! a)
@@ -200,6 +250,7 @@
   (case kind
     (:load :thumb) (s/swap-doc! (:id doc-or-req) assoc :status :error :error (str (ex-message e)))
     :export (reset! s/export-req* nil)
+    :mask (reset! s/mask-req* nil)
     nil))
 
 (defn- step! []

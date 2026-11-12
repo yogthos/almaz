@@ -82,7 +82,9 @@ int almz_gpu_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers, c
                     int out_w, int out_h, int rx, int ry, int rw, int rh, const uint8_t *bg, int level,
                     int nearest, int luma_alpha);
 void almz_gpu_forget(uint64_t uid);
+int almz_gpu_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur);
 #ifndef __APPLE__
+int almz_gpu_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur) { return 0; }
 int almz_gpu_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers, const double *xf,
                     const int32_t *clip, const AlmzMask *overlay, const float *tint, uint8_t *out,
                     int out_w, int out_h, int rx, int ry, int rw, int rh, const uint8_t *bg, int level,
@@ -441,6 +443,249 @@ static inline float lin_to_srgb(float v) {
   return v <= 0.0031308f ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
 }
 
+/* ---- gaussian blur and local contrast (RawTherapee) ---------------------- */
+/* Young & van Vliet's recursive gaussian with Triggs & Sdika's boundary
+ * conditions: rtengine/gauss.cc calculateYvVFactors and gaussHorizontal
+ * (the double precision path), over one line of n samples `stride` apart. */
+typedef struct { double b1, b2, b3, B, M[3][3]; } yvv_t;
+
+static yvv_t yvv_factors(double sigma) {
+  yvv_t f;
+  const double q = sigma < 2.5 ? 3.97156 - 4.14554 * sqrt(1.0 - 0.26891 * sigma) : 0.98711 * sigma - 0.96330;
+  const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q * q + 0.422205 * q * q * q;
+  double b1 = 2.44413 * q + 2.85619 * q * q + 1.26661 * q * q * q;
+  double b2 = -1.4281 * q * q - 1.26661 * q * q * q;
+  double b3 = 0.422205 * q * q * q;
+  f.B = 1.0 - (b1 + b2 + b3) / b0;
+  b1 /= b0; b2 /= b0; b3 /= b0;
+  f.b1 = b1; f.b2 = b2; f.b3 = b3;
+  f.M[0][0] = -b3 * b1 + 1.0 - b3 * b3 - b2;
+  f.M[0][1] = (b3 + b1) * (b2 + b3 * b1);
+  f.M[0][2] = b3 * (b1 + b3 * b2);
+  f.M[1][0] = b1 + b3 * b2;
+  f.M[1][1] = -(b2 - 1.0) * (b2 + b3 * b1);
+  f.M[1][2] = -(b3 * b1 + b3 * b3 + b2 - 1.0) * b3;
+  f.M[2][0] = b3 * b1 + b2 + b1 * b1 - b2 * b2;
+  f.M[2][1] = b1 * b2 + b3 * b2 * b2 - b1 * b3 * b3 - b3 * b3 * b3 - b3 * b2 + b3;
+  f.M[2][2] = b3 * (b1 + b3 * b2);
+  const double norm = (1.0 + b1 - b2 + b3) * (1.0 + b2 + (b1 - b3) * b3);
+  for (int i = 0; i < 3; i++)
+    for (int j = 0; j < 3; j++) f.M[i][j] /= norm;
+  return f;
+}
+
+static void yvv_line(const yvv_t *f, float *d, int n, size_t stride, double *tmp) {
+  if (n < 4) return;
+  const double B = f->B, b1 = f->b1, b2 = f->b2, b3 = f->b3;
+#define S(i) ((double)d[(size_t)(i) * stride])
+  tmp[0] = B * S(0) + b1 * S(0) + b2 * S(0) + b3 * S(0);
+  tmp[1] = B * S(1) + b1 * tmp[0] + b2 * S(0) + b3 * S(0);
+  tmp[2] = B * S(2) + b1 * tmp[1] + b2 * tmp[0] + b3 * S(0);
+  for (int j = 3; j < n; j++) tmp[j] = B * S(j) + b1 * tmp[j - 1] + b2 * tmp[j - 2] + b3 * tmp[j - 3];
+  const double e = S(n - 1);
+  const double u0 = tmp[n - 1] - e, u1 = tmp[n - 2] - e, u2 = tmp[n - 3] - e;
+  const double wm1 = e + f->M[0][0] * u0 + f->M[0][1] * u1 + f->M[0][2] * u2;
+  const double w0 = e + f->M[1][0] * u0 + f->M[1][1] * u1 + f->M[1][2] * u2;
+  const double wp1 = e + f->M[2][0] * u0 + f->M[2][1] * u1 + f->M[2][2] * u2;
+#undef S
+  tmp[n - 1] = wm1;
+  tmp[n - 2] = B * tmp[n - 2] + b1 * tmp[n - 1] + b2 * w0 + b3 * wp1;
+  tmp[n - 3] = B * tmp[n - 3] + b1 * tmp[n - 2] + b2 * tmp[n - 1] + b3 * w0;
+  for (int j = n - 4; j >= 0; j--) tmp[j] = B * tmp[j] + b1 * tmp[j + 1] + b2 * tmp[j + 2] + b3 * tmp[j + 3];
+  for (int j = 0; j < n; j++) d[(size_t)j * stride] = (float)tmp[j];
+}
+
+typedef struct { float *plane; int w, h; yvv_t f; } blur_ctx;
+
+static void blur_rows(void *p, int r0, int r1) {
+  blur_ctx *c = (blur_ctx *)p;
+  double *tmp = malloc(sizeof(double) * MAX(c->w, c->h));
+  for (int y = r0; y < r1; y++) yvv_line(&c->f, c->plane + (size_t)y * c->w, c->w, 1, tmp);
+  free(tmp);
+}
+
+static void blur_cols(void *p, int x0, int x1) {
+  blur_ctx *c = (blur_ctx *)p;
+  double *tmp = malloc(sizeof(double) * MAX(c->w, c->h));
+  for (int x = x0; x < x1; x++) yvv_line(&c->f, c->plane + x, c->h, (size_t)c->w, tmp);
+  free(tmp);
+}
+
+/* RawTherapee's gaussianBlur (large-sigma path) of one w x h plane, in place. */
+static void gauss_plane(float *plane, int w, int h, float sigma) {
+  if (sigma < 0.25f) return;
+  blur_ctx c = {plane, w, h, yvv_factors(sigma)};
+  par_for(h, 16, blur_rows, &c);
+  par_for(w, 16, blur_cols, &c);
+}
+
+void almz_tile_gauss(float *t, int tw, int th, float sigma) {
+  for (int ch = 0; ch < 3; ch++) gauss_plane(t + (size_t)ch * tw * th, tw, th, sigma);
+}
+
+/* CIE L* (0..1) of relative luminance Y and back. */
+static inline float lstar(float y) {
+  const float f = y > 0.008856f ? cbrtf(y) : 7.787f * y + 16.0f / 116.0f;
+  return (116.0f * f - 16.0f) / 100.0f;
+}
+static inline float lstar_inv(float l) {
+  const float f = (l * 100.0f + 16.0f) / 116.0f;
+  return f > 0.206893f ? f * f * f : (f - 16.0f / 116.0f) / 7.787f;
+}
+
+void almz_tile_local_contrast(float *t, int tw, int th, float sigma, float amount, float dark, float light) {
+  const size_t n = (size_t)tw * th;
+  float *L = malloc(sizeof(float) * n), *blur = malloc(sizeof(float) * n);
+  if (!L || !blur) { free(L); free(blur); return; }
+  for (size_t i = 0; i < n; i++) {
+    const float y = 0.2126f * srgb_to_lin(CLAMP(t[i], 0.0f, 1.0f)) + 0.7152f * srgb_to_lin(CLAMP(t[n + i], 0.0f, 1.0f)) +
+                    0.0722f * srgb_to_lin(CLAMP(t[2 * n + i], 0.0f, 1.0f));
+    L[i] = blur[i] = lstar(y);
+  }
+  gauss_plane(blur, tw, th, sigma);
+  /* rtengine/iplocalcontrast.cc: L + (L - blur(L)) * amount, the boost
+   * weighted by lightness / darkness; the colour scaled in linear light to
+   * the new luminance */
+  for (size_t i = 0; i < n; i++) {
+    float v = (L[i] - blur[i]) * amount;
+    if (dark != 1.0f || light != 1.0f) v *= v > 0.0f ? light : dark;
+    const float l1 = CLAMP(L[i] + v, 0.0f, 1.0f);
+    const float y0 = lstar_inv(L[i]), y1 = lstar_inv(l1);
+    const float k = y0 > 1e-6f ? y1 / y0 : 1.0f;
+    for (int ch = 0; ch < 3; ch++) {
+      float *p = t + ch * n + i;
+      *p = y0 > 1e-6f ? lin_to_srgb(MIN(srgb_to_lin(CLAMP(*p, 0.0f, 1.0f)) * k, 1.0f)) : lin_to_srgb(y1);
+    }
+  }
+  free(L);
+  free(blur);
+}
+
+typedef struct { const uint16_t *s; uint16_t *d; float *t; int w; size_t n; } focus_ctx;
+
+static void focus_in_rows(void *p, int r0, int r1) {
+  const focus_ctx *c = (const focus_ctx *)p;
+  for (int y = r0; y < r1; y++)
+    for (int x = 0; x < c->w; x++) {
+      const size_t i = (size_t)y * c->w + x;
+      for (int ch = 0; ch < 3; ch++) c->t[ch * c->n + i] = c->s[i * 3 + ch] / 65535.0f;
+    }
+}
+
+static void focus_out_rows(void *p, int r0, int r1) {
+  const focus_ctx *c = (const focus_ctx *)p;
+  for (int y = r0; y < r1; y++)
+    for (int x = 0; x < c->w; x++) {
+      const size_t i = (size_t)y * c->w + x;
+      for (int ch = 0; ch < 3; ch++)
+        c->d[i * 3 + ch] = (uint16_t)(CLAMP(c->t[ch * c->n + i], 0.0f, 1.0f) * 65535.0f + 0.5f);
+    }
+}
+
+int almz_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur) {
+  if (!dst || !src || dst->w != src->w || dst->h != src->h) return -1;
+  const int w = src->w, h = src->h;
+  const size_t n = (size_t)w * h;
+  int gpu = 0;
+  if (clarity == 0.0f && blur < 0.25f) {
+    if (dst != src) memcpy(dst->lev[0], src->lev[0], n * 3 * sizeof(uint16_t));
+  } else if (almz_gpu_focus(dst, src, clarity, radius, blur)) {
+    gpu = 1;
+  } else {
+    float *t = malloc(sizeof(float) * 3 * n);
+    if (!t) return -1;
+    focus_ctx c = {src->lev[0], dst->lev[0], t, w, n};
+    par_for(h, 16, focus_in_rows, &c);
+    if (clarity != 0.0f) almz_tile_local_contrast(t, w, h, radius, clarity, 1.0f, 1.0f);
+    if (blur >= 0.25f) almz_tile_gauss(t, w, h, blur);
+    par_for(h, 16, focus_out_rows, &c);
+    free(t);
+  }
+  almz_img_pyr_update(dst, 0, 0, w, h);
+  return gpu;
+}
+
+/* ---- lens correction ---------------------------------------------------- */
+/* Keys' cubic (a = -0.5, Catmull-Rom) weights for fraction t. */
+static inline void cubic_w(float t, float *w) {
+  const float t2 = t * t, t3 = t2 * t;
+  w[0] = -0.5f * t3 + t2 - 0.5f * t;
+  w[1] = 1.5f * t3 - 2.5f * t2 + 1.0f;
+  w[2] = -1.5f * t3 + 2.0f * t2 + 0.5f * t;
+  w[3] = 0.5f * t3 - 0.5f * t2;
+}
+
+/* Channel ch of level 0 at (x, y), bicubic, coordinates clamped to the
+ * image (darktable's lens module clamps too), 0..65535. */
+static float sample_cubic(const AlmzImg *img, float x, float y, int ch) {
+  const int w = img->w, h = img->h;
+  x = CLAMP(x, 0.0f, (float)(w - 1));
+  y = CLAMP(y, 0.0f, (float)(h - 1));
+  const int ix = (int)floorf(x), iy = (int)floorf(y);
+  float wx[4], wy[4];
+  cubic_w(x - ix, wx);
+  cubic_w(y - iy, wy);
+  const uint16_t *d = img->lev[0];
+  float acc = 0.0f;
+  for (int j = 0; j < 4; j++) {
+    const int yy = CLAMP(iy - 1 + j, 0, h - 1);
+    const uint16_t *row = d + (size_t)yy * w * 3;
+    float r = 0.0f;
+    for (int i = 0; i < 4; i++) r += wx[i] * row[(size_t)CLAMP(ix - 1 + i, 0, w - 1) * 3 + ch];
+    acc += wy[j] * r;
+  }
+  return CLAMP(acc, 0.0f, 65535.0f);
+}
+
+/* table[0..n) over 0..rmax at r, linearly; the ends held. */
+static inline float radial(const float *table, int n, double rmax, double r) {
+  const double t = r / rmax * (n - 1);
+  if (t <= 0) return table[0];
+  if (t >= n - 1) return table[n - 1];
+  const int i = (int)t;
+  const float f = (float)(t - i);
+  return table[i] + (table[i + 1] - table[i]) * f;
+}
+
+typedef struct {
+  AlmzImg *dst;
+  const AlmzImg *src;
+  double cx, cy, rmax, vrmax;
+  int n, y0;
+  const float *k, *vig;
+} lens_ctx;
+
+static void lens_rows(void *p, int r0, int r1) {
+  const lens_ctx *c = (const lens_ctx *)p;
+  const int w = c->dst->w;
+  for (int y = c->y0 + r0; y < c->y0 + r1; y++) {
+    uint16_t *o = c->dst->lev[0] + (size_t)y * w * 3;
+    const double dy = y - c->cy;
+    for (int x = 0; x < w; x++) {
+      const double dx = x - c->cx;
+      const double rho = sqrt(dx * dx + dy * dy);
+      const float kg = radial(c->k + c->n, c->n, c->rmax, rho);
+      const float gain = c->vig ? radial(c->vig, c->n, c->vrmax, rho * kg) : 1.0f;
+      for (int ch = 0; ch < 3; ch++) {
+        const float k = ch == 1 ? kg : radial(c->k + ch * c->n, c->n, c->rmax, rho);
+        float v = sample_cubic(c->src, (float)(c->cx + k * dx), (float)(c->cy + k * dy), ch) / 65535.0f;
+        if (gain != 1.0f) v = lin_to_srgb(MIN(srgb_to_lin(v) * gain, 1.0f));
+        o[(size_t)x * 3 + ch] = (uint16_t)(CLAMP(v, 0.0f, 1.0f) * 65535.0f + 0.5f);
+      }
+    }
+  }
+}
+
+void almz_lens_warp(AlmzImg *dst, const AlmzImg *src, double cx, double cy, double rmax, int n,
+                    const float *k, double vrmax, const float *vig, int y0, int y1) {
+  if (!dst || !src || dst == src || dst->w != src->w || dst->h != src->h || n < 2) return;
+  y0 = CLAMP(y0, 0, dst->h);
+  y1 = CLAMP(y1, y0, dst->h);
+  lens_ctx c = {dst, src, cx, cy, rmax, vrmax, n, y0, k, vig};
+  par_for(y1 - y0, 8, lens_rows, &c);
+  almz_img_pyr_update(dst, 0, y0, dst->w, y1 - y0);
+}
+
 /* The tone curve on an sRGB value. Each step maps 0..1 onto itself and is
  * increasing, so the whole curve is: exposure (linear light, clipped), the
  * white and black points, shadows and highlights (bumps that vanish at both
@@ -627,6 +872,50 @@ void almz_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers,
   if (tint) memcpy(c.tint, tint, sizeof(c.tint));
   if (bg) memcpy(c.bg, bg, 4);
   par_range(ry, ry + rh, 8, render_rows, &c);
+}
+
+/* ---- segmentation ------------------------------------------------------- */
+int almz_seg_input(const AlmzImg *base, const AlmzLayer *layers, int nlayers, int n,
+                   const float *mean, const float *std, float *out) {
+  if (!base || n <= 0) return -1;
+  uint8_t *rgba = malloc((size_t)n * n * 4);
+  if (!rgba) return -1;
+  /* the whole image stretched over n x n, on the CPU (a worker thread) */
+  const double xf[6] = {(double)base->w / n, 0, 0, 0, (double)base->h / n, 0};
+  const double det = xf[0] * xf[4];
+  const double scale = 1.0 / sqrt(det);
+  int k = 0;
+  while (k + 1 < base->nlev && scale * (1 << (k + 1)) <= 1.0) k++;
+  float b[4];
+  clip_bounds(base, NULL, b);
+  render_ctx c = {base, layers, nlayers, k, scale >= 2.0, {xf[0], xf[1], xf[2], xf[3], xf[4], xf[5]},
+                  b[0], b[1], b[2], b[3], NULL, {0, 0, 0, 0}, rgba, n, 0, n, {0, 0, 0, 255}};
+  par_range(0, n, 8, render_rows, &c);
+  const size_t plane = (size_t)n * n;
+  for (size_t i = 0; i < plane; i++)
+    for (int ch = 0; ch < 3; ch++)
+      out[ch * plane + i] = (rgba[i * 4 + ch] / 255.0f - (mean ? mean[ch] : 0.0f)) / (std ? std[ch] : 1.0f);
+  free(rgba);
+  return 0;
+}
+
+void almz_mask_set(AlmzMask *m, const float *prob, int pw, int ph, int logits) {
+  if (!m || !prob || pw <= 0 || ph <= 0) return;
+  for (int y = 0; y < m->h; y++) {
+    const float v = ((y + 0.5f) * m->div / m->ih) * ph - 0.5f;
+    const int y0 = CLAMP((int)floorf(v), 0, ph - 1), y1 = MIN(y0 + 1, ph - 1);
+    const float fy = CLAMP(v - y0, 0.0f, 1.0f);
+    for (int x = 0; x < m->w; x++) {
+      const float u = ((x + 0.5f) * m->div / m->iw) * pw - 0.5f;
+      const int x0 = CLAMP((int)floorf(u), 0, pw - 1), x1 = MIN(x0 + 1, pw - 1);
+      const float fx = CLAMP(u - x0, 0.0f, 1.0f);
+      float p = (prob[(size_t)y0 * pw + x0] * (1 - fx) + prob[(size_t)y0 * pw + x1] * fx) * (1 - fy) +
+                (prob[(size_t)y1 * pw + x0] * (1 - fx) + prob[(size_t)y1 * pw + x1] * fx) * fy;
+      if (logits) p = 1.0f / (1.0f + expf(-p));
+      m->paint[(size_t)y * m->w + x] = CLAMP(p, 0.0f, 1.0f);
+    }
+  }
+  soft_update(m, 0, 0, m->w, m->h);
 }
 
 /* ---- histogram ---------------------------------------------------------- */

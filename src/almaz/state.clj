@@ -24,10 +24,11 @@
 (defonce history* (r/atom {}))
 (defonce job* (r/atom nil))       ; {:label :done :total} while the worker is busy
 (defonce message* (r/atom "Add images to begin"))
-(defonce autopilot* (r/atom true))
+(defonce autopilot* (r/atom false))
 (defonce pixels-rev* (r/atom 0))  ; native pixels changed (tiles written, masks painted)
 (defonce cursor* (r/atom nil))    ; pointer over the canvas [x y], nil outside
 (defonce space* (r/atom false))   ; Space held over the canvas: drag pans
+(defonce mask-req* (r/atom nil))   ; {:doc :layer :sel} an automatic mask for the worker
 (defonce export-req* (atom nil))  ; {:doc :path :format :quality} for the worker
 
 ;; ---- worker wake-up ----------------------------------------------------------

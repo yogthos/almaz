@@ -169,25 +169,57 @@
                               p (c/set-level (second (d/colour l)) ch which v)]
                           (d/update-layer db lid merge p)))))
 
+(defn set-curve!
+  "Set curves channel `ch`'s points (almaz.color). `step` names the undo
+   step: a drag's edits share one."
+  [ch pts step]
+  (edit-kind! :curves [:curve ch step]
+              (fn [db lid] (d/set-param db lid (c/cv-key ch) (c/format-points pts)))))
+
 (defn start-pick!
-  "The next click on the image sets levels' `which` point (:black :grey :white)."
-  [which]
-  (swap! s/tool* assoc :mode :pick :pick which :layer nil))
+  "The next click on the image sets levels' `which` point (:black :grey
+   :white), or with :curve, puts a point on curves channel `ch` at the
+   picked tone."
+  ([which] (start-pick! which nil))
+  ([which ch]
+   (swap! s/tool* assoc :mode :pick :pick which :pick-ch ch :layer nil)))
+
+(defn- tone-of
+  "Where colour `rgb` sits on curves channel `ch` (0..1)."
+  [ch [r g b]]
+  (case ch
+    :r r :g g :b b
+    :rgb (/ (+ r g b) 3.0)
+    :l (c/lin->srgb (+ (* 0.2126 (c/srgb->lin r)) (* 0.7152 (c/srgb->lin g)) (* 0.0722 (c/srgb->lin b))))))
+
+(defn- pick-curve!
+  "Put a point on the curves channel at the tone the image has at source
+   pixel p (what curves receives there), on the curve as it is."
+  [dc p ch]
+  (let [below (take-while #(not= :curves (:kind %)) (s/layers (:id dc)))
+        rgb (px/sample (:base dc) (eng/layer-refs dc below) p 2)
+        x (tone-of ch rgb)
+        key (c/cv-key ch)
+        pts (c/parse-points (get (d/layer-of @s/db* (:id dc) :curves) key ""))
+        [pts' _] (c/add-point pts x ((c/curve-fn pts) x))]
+    (set-curve! ch pts' nil)))
 
 (defn pick!
   "Set the levels point being picked from the image at source pixel p: the
    colour levels receives there (the stack below it)."
   [p]
   (when-let [{:keys [id base] :as dc} (s/current-doc)]
-    (let [which (:pick @s/tool*)]
-      (swap! s/tool* assoc :mode :pan :pick nil)
+    (let [{which :pick ch :pick-ch} @s/tool*]
+      (swap! s/tool* assoc :mode :pan :pick nil :pick-ch nil)
+      (if (= :curve which)
+        (when base (pick-curve! dc p ch))
       (when (and base which)
         (let [below (take-while #(not= :levels (:kind %)) (s/layers id))
               rgb (px/sample base (eng/layer-refs dc below) p 2)]
           (edit-kind! :levels nil
                       (fn [db lid]
                                 (d/update-layer db lid merge
-                                                (c/pick-level (second (d/colour (d/layer db lid))) which rgb)))))))))
+                                                (c/pick-level (second (d/colour (d/layer db lid))) which rgb))))))))))
 
 (defn- with-mask!
   "Apply `f` to layer `lid`'s mask, an undo step (same-key ones merge)."
@@ -207,9 +239,34 @@
   (when-let [id (cur-id)] (s/edit! id d/update-layer lid assoc :feather (double sigma))))
 
 (defn begin-stroke!
-  "A brush stroke on layer `lid`'s mask starts: an undo step."
+  "A brush stroke on layer `lid`'s mask starts: an undo step. A painted mask
+   is a custom one."
   [lid]
-  (record! nil [lid]))
+  (record! nil [lid])
+  (when-let [id (cur-id)]
+    (when (not= :custom (:mask-sel (s/layer lid)))
+      (s/edit! id d/update-layer lid assoc :mask-sel :custom))))
+
+(defn select-mask!
+  "Set layer `lid`'s mask to a selection (almaz.segment/selections): :all
+   fills it, :custom keeps it, the others are found by a model on the
+   worker. The brush comes out on the layer, the mask shown, to see the
+   selection and refine it. An undo step (but for :custom, which changes no
+   pixels)."
+  [lid sel]
+  (when-let [id (cur-id)]
+    (when-not (= :custom sel) (record! nil [lid]))
+    (s/edit! id d/update-layer lid assoc :mask-sel sel)
+    (reset! s/mask-req* nil)
+    (swap! s/tool* assoc :mode :paint :layer lid :pick nil :show-mask true)
+    (case sel
+      :all (when-let [m (:mask (s/layer lid))]
+             (px/mask-fill! m 1.0)
+             (s/edit! id d/bump-mask lid)
+             (s/bump-pixels!))
+      :custom nil
+      (do (reset! s/mask-req* {:doc id :layer lid :sel sel})
+          (s/wake!)))))
 
 (defn set-tool! [mode lid]
   (swap! s/tool* assoc :mode mode :layer (when (not= mode :pan) lid) :pick nil))
@@ -262,7 +319,7 @@
   (edit-geom! [:ratio] (fn [dc] (g/constrain (assoc dc :ratio-w (max 0.01 (double rw)) :ratio-h (max 0.01 (double rh)))
                                     :custom-ratio))))
 (defn reset-crop! []
-  (edit-geom! nil (fn [dc] (assoc dc :crop-x nil :crop-y nil :crop-w nil :crop-h nil :constrain :free))))
+  (edit-geom! nil (fn [dc] (assoc dc :crop-x nil :crop-y nil :crop-w nil :crop-h nil :constrain :original))))
 (defn set-display-crop!
   "Set the crop from the crop editor's rect (display coordinates)."
   [rect]

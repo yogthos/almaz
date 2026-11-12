@@ -138,6 +138,16 @@ int almz_mask_regions(const AlmzMask *m, float thr, int margin, int32_t *rects, 
 /* 1 where the mask is over `thr` at the pixels of the rect (x0, y0, w, h). */
 void almz_mask_hole(const AlmzMask *m, int x0, int y0, int w, int h, float thr, uint8_t *out);
 
+/* -- segmentation (automatic masks) --------------------------------------- */
+/* The composite of base + layers stretched over n x n, as planar NCHW floats
+ * (v - mean[c]) / std[c] of the 0..1 values (mean/std may be NULL: 0 / 1):
+ * a segmentation model's input. 0 on success. */
+int almz_seg_input(const AlmzImg *base, const AlmzLayer *layers, int nlayers, int n,
+                   const float *mean, const float *std, float *out);
+/* Set the mask's paint from a pw x ph map covering the whole image
+ * (bilinear; `logits`: pass it through a sigmoid first), then feather. */
+void almz_mask_set(AlmzMask *m, const float *prob, int pw, int ph, int logits);
+
 /* -- repair ---------------------------------------------------------------- */
 /* Fill the pixels where hole != 0 of a planar RGB (0..1) w x h image from
  * the rest of it (inpaint.c: PatchMatch texture, healed lighting) into
@@ -168,6 +178,17 @@ int almz_gpu_active(void);
 /* Write the full-resolution composite of base + layers into `dst` (same size). */
 void almz_composite_into(AlmzImg *dst, const AlmzImg *base, const AlmzLayer *layers, int nlayers);
 
+/* -- lens correction ------------------------------------------------------ */
+/* Rows [y0, y1) of `dst` from `src` (same size, distinct) undistorted by
+ * radial tables (almaz.lens): a corrected pixel at distance r from the
+ * centre (cx, cy) is read, per channel c, from the source at the centre plus
+ * k[c * n + i(r)] times its offset, where the n entries of each channel's
+ * table cover r in 0..rmax (linearly interpolated, ends held); bicubic,
+ * clamped at the edges. `vig` (n gains over source radius 0..vrmax, may be
+ * NULL) then brightens it in linear light. Updates the pyramid there. */
+void almz_lens_warp(AlmzImg *dst, const AlmzImg *src, double cx, double cy, double rmax, int n,
+                    const float *k, double vrmax, const float *vig, int y0, int y1);
+
 /* -- tiled inference ----------------------------------------------------- */
 /* The composite of base + layers[0..n) over the tile (x0, y0, tw, th) as
  * planar NCHW floats 0..1. Outside the image the edge is mirrored. */
@@ -181,6 +202,20 @@ void almz_tile_write(AlmzImg *dst, const float *src, int tw, int th, int x0, int
                      int ramp_l, int ramp_t, int ramp_r, int ramp_b);
 /* Classic unsharp mask, in place on a planar tile. */
 void almz_tile_unsharp(float *t, int tw, int th, float sigma, float amount);
+/* Gaussian blur of a planar tile, in place (RawTherapee's recursive
+ * Young-van Vliet filter; sigma in pixels, < 0.25 does nothing). */
+void almz_tile_gauss(float *t, int tw, int th, float sigma);
+/* Local contrast (RawTherapee's, i.e. clarity) of a planar tile, in place:
+ * L* + (L* - blur_sigma(L*)) * amount, the boost scaled by `light` where it
+ * brightens and `dark` where it darkens; colour follows the luminance.
+ * A negative amount softens. */
+void almz_tile_local_contrast(float *t, int tw, int th, float sigma, float amount, float dark, float light);
+
+/* Focus over a whole image: dst = src with local contrast `clarity` (blur
+ * radius `radius` px, as almz_tile_local_contrast) then a gaussian blur of
+ * sigma `blur` px (as almz_tile_gauss), edges replicated. On the GPU when
+ * there is one (returns 1), else on the CPU (0); -1 for mismatched images. */
+int almz_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur);
 /* Put back `amount` of the input's fine detail the model removed:
  * out += amount * (highpass(in) - highpass(out)). */
 void almz_tile_detail(float *out, const float *in, int tw, int th, float sigma, float amount);
@@ -206,6 +241,10 @@ typedef struct AlmzMeta {
 /* Read the metadata of a JPEG (APP1), PNG (eXIf) or any TIFF-structured
  * file (TIFF, NEF, ARW, DNG, CR2, ...). 1 when any field was found. */
 int almz_meta_read(const char *path, AlmzMeta *out);
+/* The lens corrections a Sony raw file carries (DistortionCorrParams,
+ * ChromaticAberrationCorrParams, VignettingCorrParams), each as stored: a
+ * count, then the values; at most `cap` ints of each. 1 when present. */
+int almz_sony_corrections(const char *path, int32_t *dist, int32_t *ca, int32_t *vig, int cap);
 /* Serialize as a little-endian EXIF TIFF structure (no "Exif\0\0" prefix).
  * Returns the length; *out is malloc'd. 0 when there is nothing to write. */
 size_t almz_exif_build(const AlmzMeta *m, uint8_t **out);

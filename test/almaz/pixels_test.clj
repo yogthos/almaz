@@ -532,3 +532,120 @@
       (px/mask-restore! m snap)
       (is (< (px/mask-at m 32 32) 0.01)))
     (doseq [x [m snap]] (px/free-mask! x))))
+
+(defn- plan [w h kfn & [vig]]
+  (let [n 64 rmax (+ 2.0 (* 0.5 (Math/hypot w h)))]
+    {:center [(/ (dec w) 2.0) (/ (dec h) 2.0)] :rmax rmax :vrmax rmax
+     :k (vec (for [ch (range 3)] (vec (repeat n (kfn ch)))))
+     :vig (when vig (vec (repeat n vig)))}))
+
+(deftest lens-warp
+  (let [w 41 h 31
+        src (filled w h (fn [x y] [(/ x 40.0) (/ y 30.0) 0.25]))
+        dst (px/new-image w h)]
+    (testing "k = 1 everywhere: the image unchanged (bicubic is exact on the grid)"
+      (px/lens-warp! dst src (plan w h (constantly 1.0)))
+      (doseq [[x y] [[0 0] [7 9] [40 30] [20 15]]]
+        (is (every? true? (map (partial close? 2e-5) (px/pixel src x y) (px/pixel dst x y))))))
+    (testing "k = 0.5: a pixel reads halfway to the centre (a ramp stays a ramp)"
+      (px/lens-warp! dst src (plan w h (constantly 0.5)))
+      (let [[r g] (px/pixel dst 40 30)]
+        (is (close? 2e-3 (/ 30.0 40.0) r))
+        (is (close? 2e-3 (/ 22.5 30.0) g))))
+    (testing "per channel: red reads further out than green (TCA)"
+      (px/lens-warp! dst src (plan w h #(if (= 0 %) 0.9 0.5)))
+      (let [[r g] (px/pixel dst 0 15)]
+        (is (close? 2e-3 (/ 2.0 40.0) r))
+        (is (close? 2e-3 (/ 7.5 30.0) (second (px/pixel dst 20 0))))))
+    (testing "vignetting gain multiplies linear light"
+      (let [grey (filled w h (constantly [0.5 0.5 0.5]))]
+        (px/lens-warp! dst grey (plan w h (constantly 1.0) 2.0))
+        (let [lin (fn [v] (if (<= v 0.04045) (/ v 12.92) (Math/pow (/ (+ v 0.055) 1.055) 2.4)))]
+          (is (close? 2e-3 (* 2 (lin 0.5)) (lin (first (px/pixel dst 5 5))))))
+        (px/free-image! grey)))
+    (testing "only the rows asked for"
+      (let [black (px/new-image w h)]
+        (px/lens-warp! black src (plan w h (constantly 1.0)) 10 12)
+        (is (= [0.0 0.0 0.0] (mapv double (px/pixel black 5 9))))
+        (is (pos? (first (px/pixel black 5 10))))
+        (px/free-image! black)))
+    (doseq [i [src dst]] (px/free-image! i))))
+
+(defn- tile-of
+  "A planar 3 x w x h float tile with every channel (f x y)."
+  [w h f]
+  (let [p (ffi/alloc (* 4 3 w h))]
+    (dotimes [c 3] (dotimes [y h] (dotimes [x w] (ffi/write p :float (float (f x y)) (* 4 (+ (* c w h) (* y w) x))))))
+    p))
+
+(defn- tile-at [p w h c x y] (double (ffi/read p :float (* 4 (+ (* c w h) (* y w) x)))))
+
+(deftest gaussian-blur
+  (let [w 101 h 101]
+    (testing "a flat tile stays flat"
+      (let [t (tile-of w h (constantly 0.4))]
+        (px/gauss! t w h 5.0)
+        (is (close? 1e-4 0.4 (tile-at t w h 0 0 0)))
+        (is (close? 1e-4 0.4 (tile-at t w h 2 50 50)))
+        (ffi/free t)))
+    (testing "an impulse spreads with the given sigma and keeps its mass"
+      (let [t (tile-of w h (fn [x y] (if (= [x y] [50 50]) 1.0 0.0)))
+            sigma 6.0]
+        (px/gauss! t w h sigma)
+        (let [vals (for [y (range h) x (range w)] [x y (tile-at t w h 1 x y)])
+              mass (reduce + (map last vals))
+              var-x (/ (reduce + (map (fn [[x _ v]] (* v (Math/pow (- x 50) 2))) vals)) mass)]
+          (is (close? 0.02 1.0 mass))
+          (is (close? 0.15 1.0 (/ (Math/sqrt var-x) sigma)))
+          (is (close? 1e-6 (tile-at t w h 1 45 50) (tile-at t w h 1 55 50)) "symmetric"))
+        (ffi/free t)))))
+
+(deftest local-contrast
+  (let [w 120 h 40]
+    (testing "a flat tile has no local contrast to change"
+      (let [t (tile-of w h (constantly 0.5))]
+        (px/local-contrast! t w h {:sigma 10.0 :amount 0.8})
+        (is (close? 1e-4 0.5 (tile-at t w h 0 60 20)))
+        (ffi/free t)))
+    (testing "positive amount steepens an edge, negative softens it"
+      (let [edge (fn [x _] (if (< x 60) 0.3 0.6))
+            up (tile-of w h edge) down (tile-of w h edge)]
+        (px/local-contrast! up w h {:sigma 10.0 :amount 0.8})
+        (px/local-contrast! down w h {:sigma 10.0 :amount -0.5})
+        (is (< (tile-at up w h 0 57 20) 0.3) "dark side darker")
+        (is (> (tile-at up w h 0 62 20) 0.6) "bright side brighter")
+        (is (> (tile-at down w h 0 57 20) 0.3))
+        (is (< (tile-at down w h 0 62 20) 0.6))
+        (is (close? 1e-3 0.3 (tile-at up w h 0 5 20)) "far from the edge: unchanged")
+        (ffi/free up) (ffi/free down)))))
+
+;; Focus over a whole image: clarity then blur, on the GPU when there is one,
+;; matching the CPU's RawTherapee gaussian (to rounding and the GPU's halves).
+(deftest whole-image-focus
+  (let [w 240 h 160
+        src (filled w h (fn [x y] [(if (< x 120) 0.2 0.8) (/ y 159.0) (if (< y 80) 0.3 0.6)]))
+        run (fn [gpu? params]
+              (px/set-gpu! gpu?)
+              (let [out (px/new-image w h)]
+                (try (px/focus! out src params)
+                     (finally (px/set-gpu! true)))
+                out))
+        diff (fn [a b] (reduce max 0.0 (for [y (range 0 h 3) x (range 0 w 3) c (range 3)]
+                                           (Math/abs (- (nth (px/pixel a x y) c) (nth (px/pixel b x y) c))))))]
+    (testing "nothing to do copies the image"
+      (let [o (run false {:clarity 0.0 :radius 20.0 :blur 0.0})]
+        (is (< (diff o src) 1e-4))
+        (px/free-image! o)))
+    (testing "blur smears the edge, leaves the far side"
+      (let [o (run false {:clarity 0.0 :radius 20.0 :blur 6.0})]
+        (is (< 0.4 (first (px/pixel o 120 40)) 0.6))
+        (is (close? 0.01 0.2 (first (px/pixel o 40 40))))
+        (px/free-image! o)))
+    (testing "the GPU draws what the CPU does"
+      (doseq [params [{:clarity 0.0 :radius 20.0 :blur 6.0}
+                      {:clarity 0.6 :radius 15.0 :blur 0.0}
+                      {:clarity -0.4 :radius 25.0 :blur 3.0}]]
+        (let [g (run true params) c (run false params)]
+          (is (< (diff g c) 0.01) (str params))
+          (px/free-image! g) (px/free-image! c))))
+    (px/free-image! src)))

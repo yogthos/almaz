@@ -37,7 +37,7 @@ jobs:
           path: |
             ~/.jolt/gitlibs
             ~/deps
-          key: linux-${{ env.JOLT_VERSION }}-${{ env.ORT_VERSION }}-${{ env.LIBRAW_SHA }}-${{ env.BUI_SHA }}-${{ hashFiles('deps.edn') }}
+          key: linux-${{ env.JOLT_VERSION }}-${{ env.ORT_VERSION }}-${{ env.LIBRAW_SHA }}-${{ env.BUI_SHA }}-${{ hashFiles('deps.edn', 'native/patches/*.patch') }}
 
       - name: ONNX Runtime
         run: |
@@ -60,6 +60,7 @@ jobs:
           if [ ! -f ~/deps/bui/lib/libbui.so ]; then
             git clone https://github.com/ppmpreetham/BUI ~/deps/bui
             git -C ~/deps/bui checkout "$BUI_SHA"
+            git -C ~/deps/bui apply "$GITHUB_WORKSPACE"/native/patches/bui-*.patch
             cmake -S ~/deps/bui -B ~/deps/bui/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
             cmake --build ~/deps/bui/build --parallel
             mkdir -p ~/deps/bui/lib

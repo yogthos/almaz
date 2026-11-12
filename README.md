@@ -22,11 +22,12 @@ See [PLAN.md](PLAN.md) for the target analysis and plan.
 - The sidebar has three tabs. **Enhance**: Denoise and Sharpen. **Color**:
   Light (exposure, contrast, highlights, shadows, whites, blacks, saturation,
   auto exposure), Levels (black/grey/white per channel over a histogram, with
-  pickers), Color Balance (cyan/red, magenta/green, yellow/blue, saturation
+  pickers), Curves (Luminance, RGB, Red, Green or Blue: click to add a point,
+  drag it, double-click to remove it, or pick a tone from the image), Color Balance (cyan/red, magenta/green, yellow/blue, saturation
   and brightness for shadows, midtones and highlights), Hue & Saturation (with
   vibrance), Selective Color (hue, saturation, brightness for eight hue
   bands), Black & White (channel mix, toning, intensity) and Vignette. The
-  colour maths follows darktable's modules (rgblevels, colorbalancergb,
+  colour maths follows darktable's modules (rgblevels, rgbcurve, colorbalancergb,
   colorequal, channelmixerrgb, vignette), written in Clojure (`almaz.color`)
   and drawn as 3D colour tables or per-channel curves, so the sliders respond
   as they move. **Dimensions**: rotate and flip, and crop by dragging a frame
@@ -43,8 +44,9 @@ See [PLAN.md](PLAN.md) for the target analysis and plan.
 - **Undo / Redo** (Cmd+Z / Shift+Cmd+Z over the image, or the top bar): the
   last 10 edits per image, settings, switches, crop and turns, mask and
   repair strokes; a slider drag is one step.
-- **Autopilot** measures noise and sharpness when an image opens and switches
-  on the filters it needs at suggested strengths.
+- Filters run only when switched on. **Autopilot** (off by default in the
+  app; the command line uses it) measures noise and sharpness when an image
+  opens and switches on the filters it needs at suggested strengths.
 - On macOS the picture on screen (the layer stack, colour adjustments,
   masks, crop and rotation) and the histograms are drawn on the GPU with
   Metal, falling back to the CPU without one (`ALMAZ_GPU=0` forces it);
@@ -181,6 +183,27 @@ native/tools/venv/bin/python native/tools/export_nafnet.py \
 
 The first run on macOS compiles each model for Core ML (cached in
 `~/Library/Caches/almaz/coreml`).
+
+The automatic masks (Subject, Background, Portrait, Landscape, Sky) use two
+more models, fetched the first time one is picked:
+
+- BiRefNet-lite (ZhengPeng7, MIT), the ONNX export onnx-community publishes,
+  downloaded from Hugging Face: salient object (Subject, Background).
+- UperNet + ConvNeXt-tiny (openmmlab, MIT) on ADE20K, exported with its
+  classes summed into sky, person and landscape probabilities (Sky, Portrait,
+  Landscape). It goes on the `models-v2` release; to export it yourself:
+
+```sh
+native/tools/venv/bin/pip install "transformers<5"
+native/tools/venv/bin/python native/tools/export_scene_seg.py models/almaz/upernet-convnext-tiny-512.onnx
+```
+
+Lens correction uses the [lensfun](https://github.com/lensfun/lensfun)
+database (CC-BY-SA 3.0), converted into `src/almaz/lens/db.clj`:
+
+```sh
+native/tools/venv/bin/python native/tools/lensfun_to_clj.py ~/src/lensfun/data/db
+```
 
 > The Qualcomm AI Hub NAFNet exports used earlier are **not** used: both blow
 > up (outputs in the hundreds) on real photos. Also note the models expect a

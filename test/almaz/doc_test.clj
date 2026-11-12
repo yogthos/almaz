@@ -61,8 +61,8 @@
       (is (thrown? Exception (d/update-layer db id assoc :opacity 1.5))))))
 
 (deftest tabs
-  (is (= [:denoise :sharpen :repair] (d/kinds-in :enhance)))
-  (is (= [:light :levels :balance :hsl :selective :bw :vignette] (d/kinds-in :color))))
+  (is (= [:denoise :sharpen :repair :focus] (d/kinds-in :enhance)))
+  (is (= [:light :levels :curves :balance :hsl :selective :bw :vignette] (d/kinds-in :color))))
 
 (deftest colour-layers
   (let [[db id] (d/ensure-layer db0 1 :balance)]
@@ -151,7 +151,7 @@
       (is (= [:denoise :sharpen :light] (kinds db)))
       (is (= {:exposure 0.0 :contrast 0.0 :highlights 0.0 :shadows 0.0 :whites 0.0 :blacks 0.0 :saturation 0.0}
              (d/tone (d/layer db l))))
-      (is (= 3 (:position (d/layer db l))) "the filters stay below it"))
+      (is (= 4 (:position (d/layer db l))) "the filters stay below it"))
     (testing "an adjustment is computed as it's drawn: never queued for processing"
       (let [db (processed db)]
         (is (d/processed? db 1))
@@ -184,8 +184,8 @@
 (deftest geometry-columns
   (testing "orientation stays 0..7"
     (is (thrown? Exception (d/update-doc db0 1 assoc :orient 8))))
-  (testing "a doc starts upright, uncropped, unconstrained"
-    (is (= {:orient 0 :crop-w nil :constrain :free}
+  (testing "a doc starts upright, uncropped, the crop keeping the photo's shape"
+    (is (= {:orient 0 :crop-w nil :constrain :original}
            (select-keys (d/doc db0 1) [:orient :crop-w :constrain])))))
 
 (deftest repair-layers
@@ -206,3 +206,27 @@
       (let [in #(nth (d/input-signatures % 1) 1)]
         (is (= (in db) (in (d/bump-mask db r))))
         (is (not= (in db) (in (d/bump-mask db n))))))))
+
+(deftest lens-layers
+  (let [[db s] (d/ensure-layer db0 1 :sharpen)
+        [db l] (d/ensure-layer db 1 :lens)]
+    (testing "lens correction lives on the Dimensions tab, under every other layer"
+      (is (= [:lens] (d/kinds-in :dimensions)))
+      (is (= [:lens :sharpen] (kinds db))))
+    (testing "on by default: distortion, TCA, vignetting and auto-fill, method chosen automatically"
+      (is (= {:model :classic :lens-method :auto :lens-dist true :lens-tca true :lens-vig true
+              :lens-fill true :lens-id nil}
+             (d/params (d/layer db l)))))
+    (testing "it is processed, and editing it makes the layers above stale"
+      (let [db (processed db)
+            y (d/set-param db l :lens-tca false)]
+        (is (not (d/live? (d/layer db l))))
+        (is (= [0 1] (d/stale-indices y 1)))))))
+
+(deftest focus-layers
+  (testing "Focus is an Enhance filter after the repairs, processed, not live"
+    (is (= [:denoise :sharpen :repair :focus] (d/kinds-in :enhance)))
+    (let [[db f] (d/ensure-layer db0 1 :focus)]
+      (is (not (d/live? (d/layer db f))))
+      (is (= {:model :classic :focus-clarity 0.0 :focus-radius 80.0 :focus-blur 0.0}
+             (d/params (d/layer db f)))))))

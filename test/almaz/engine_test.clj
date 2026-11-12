@@ -153,3 +153,39 @@
         (is (= before (px/pixel out 80 100)))))
     (px/free-mask! mask)
     (doseq [i [base out]] (px/free-image! i))))
+
+(deftest lens-correction
+  (let [w 300 h 200
+        base (filled w h (fn [x y] [(/ x 299.0) (/ y 199.0) 0.5]))
+        out (px/new-image w h)
+        k (vec (repeat 3 (vec (repeat 32 0.5))))
+        plan {:center [149.5 99.5] :rmax 200.0 :k k :vrmax 200.0 :vig nil}]
+    (testing "no plan: the composite below as it is"
+      (is (= :done (eng/lens! {:base base :below [] :out out :plan nil})))
+      (is (< (max-diff base out w h) 1e-4)))
+    (testing "a plan warps every band, reporting progress"
+      (let [seen (atom [])]
+        (is (= :done (eng/lens! {:base base :below [] :out out :plan plan
+                                 :progress (fn [d t] (swap! seen conj [d t]))})))
+        (is (= [2 2] (last @seen)))
+        (is (< (Math/abs (- (first (px/pixel out 299 0)) (/ (+ 149.5 (* 0.5 149.5)) 299.0))) 2e-3))
+        (is (< (Math/abs (- (first (px/pixel out 0 199)) (/ (* 0.5 149.5) 299.0))) 2e-3))))
+    (testing "cancelled between bands"
+      (is (= :cancelled (eng/lens! {:base base :below [] :out out :plan plan :cancelled? (constantly true)}))))
+    (testing "settings as plan options"
+      (is (= {:method :lensfun :dist? true :tca? false :vig? true :autofill? true :lens "X"}
+             (eng/lens-opts {:lens-method :lensfun :lens-dist true :lens-tca false :lens-vig true
+                             :lens-fill true :lens-id "X"}))))
+    (doseq [i [base out]] (px/free-image! i))))
+
+(deftest focus-filter
+  (testing "the whole image is blurred at once, edges and all"
+    (let [w 300 h 200
+          base (filled w h (fn [x y] [(if (< x 150) 0.2 0.8) (/ y 199.0) 0.5]))
+          out (px/new-image w h)
+          layer {:focus-clarity 0.0 :focus-radius 80.0 :focus-blur 8.0}]
+      (is (= :done (eng/focus! {:base base :below [] :out out :layer layer})))
+      (let [[r] (px/pixel out 150 100) [r0] (px/pixel out 100 100)]
+        (is (< 0.4 r 0.6) "the edge is smeared")
+        (is (< (Math/abs (- r0 0.2)) 0.01) "far from it, unchanged"))
+      (doseq [i [base out]] (px/free-image! i)))))

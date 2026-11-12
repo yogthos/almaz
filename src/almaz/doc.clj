@@ -56,7 +56,7 @@
    [:crop-w      :int     :nullable]
    [:crop-h      :int     :nullable]
    ;; the crop's constraint (almaz.crop) and the custom aspect ratio
-   [:constrain   :keyword :default :free]
+   [:constrain   :keyword :default :original]
    [:ratio-w     :real    :default 3.0 :check [> :ratio-w 0.0]]
    [:ratio-h     :real    :default 2.0 :check [> :ratio-h 0.0]]])
 
@@ -73,7 +73,12 @@
    :tab is where its panel lives, :params its settings' defaults, :opacity
    the strength it starts at when switched on by hand (else full). A :live
    kind is computed as it is drawn (no processing, no pixels of its own)."
-  {:denoise   {:label "Denoise" :order 0 :tab :enhance :opacity 0.5
+  {;; lens correction (almaz.lens) undoes the lens's geometry first, so every
+   ;; layer above (and every mask) works on the corrected image
+   :lens      {:label "Lens Correction" :order -1 :tab :dimensions :opacity 1.0
+               :params {:model :classic :lens-method :auto :lens-dist true :lens-tca true
+                        :lens-vig true :lens-fill true :lens-id nil}}
+   :denoise   {:label "Denoise" :order 0 :tab :enhance :opacity 0.5
                :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
    :sharpen   {:label "Sharpen" :order 1 :tab :enhance :opacity 0.5
                :params {:model :ai :detail 0.0 :amount 1.0 :radius 1.5}}
@@ -81,14 +86,19 @@
    ;; from the surroundings (almaz.engine/repair!)
    :repair    {:label "Repair" :order 2 :tab :enhance :mask-input true :mask-fill 0.0 :feather 3.0
                :params {:model :classic}}
-   :light     {:label "Light" :order 3 :tab :color :live true
+   ;; Focus: clarity (local contrast) and gaussian blur, RawTherapee's; with
+   ;; a mask, e.g. the background defocused or the subject crisper
+   :focus     {:label "Focus" :order 3 :tab :enhance :opacity 1.0
+               :params {:model :classic :focus-clarity 0.0 :focus-radius 80.0 :focus-blur 0.0}}
+   :light     {:label "Light" :order 4 :tab :color :live true
                :params (assoc (zipmap tone-keys (repeat 0.0)) :model :classic)}
-   :levels    {:label "Levels" :order 4 :tab :color :live true :params (colour-params :levels)}
-   :balance   {:label "Color Balance" :order 5 :tab :color :live true :params (colour-params :balance)}
-   :hsl       {:label "Hue & Saturation" :order 6 :tab :color :live true :params (colour-params :hsl)}
-   :selective {:label "Selective Color" :order 7 :tab :color :live true :params (colour-params :selective)}
-   :bw        {:label "Black & White" :order 8 :tab :color :live true :params (colour-params :bw)}
-   :vignette  {:label "Vignette" :order 9 :tab :color :live true :params (colour-params :vignette)}})
+   :levels    {:label "Levels" :order 5 :tab :color :live true :params (colour-params :levels)}
+   :curves    {:label "Curves" :order 6 :tab :color :live true :params (colour-params :curves)}
+   :balance   {:label "Color Balance" :order 7 :tab :color :live true :params (colour-params :balance)}
+   :hsl       {:label "Hue & Saturation" :order 8 :tab :color :live true :params (colour-params :hsl)}
+   :selective {:label "Selective Color" :order 9 :tab :color :live true :params (colour-params :selective)}
+   :bw        {:label "Black & White" :order 10 :tab :color :live true :params (colour-params :bw)}
+   :vignette  {:label "Vignette" :order 11 :tab :color :live true :params (colour-params :vignette)}})
 
 (defn default-opacity
   "The strength a `kind` layer starts at: full strength is too much for the
@@ -102,10 +112,15 @@
   (->> kinds (filter #(= tab (:tab (val %)))) (sort-by (comp :order val)) (mapv key)))
 
 (def ^:private colour-columns
-  "One real column per colour setting, its range checked."
-  (for [[_ m] (sort-by key c/settings)
-        [k [d lo hi]] (sort-by key m)]
-    [k :real :default d :check [:and [>= k lo] [<= k hi]]]))
+  "One real column per colour setting, its range checked; a text column per
+   curve channel (its points)."
+  (concat
+   (for [[_ m] (sort-by key c/settings)
+         [k [d lo hi]] (sort-by key m)]
+     [k :real :default d :check [:and [>= k lo] [<= k hi]]])
+   (for [[_ m] (sort-by key c/curve-settings)
+         [k d] (sort-by key m)]
+     [k :text :default d])))
 
 (s/create-table* :layer
   (into
@@ -127,8 +142,22 @@
     [:whites      :real    :default 0.0 :check [:and [>= :whites -1.0] [<= :whites 1.0]]]
     [:blacks      :real    :default 0.0 :check [:and [>= :blacks -1.0] [<= :blacks 1.0]]]
     [:saturation  :real    :default 0.0 :check [:and [>= :saturation -1.0] [<= :saturation 1.0]]]
+    ;; lens correction: how (almaz.lens/plan), what, and a lens chosen over
+    ;; the detected one (its almaz.lens/label)
+    [:lens-method :keyword :default :auto :check [contains? #{:auto :lensfun :embedded} :lens-method]]
+    [:lens-dist   :bool    :default true]
+    [:lens-tca    :bool    :default true]
+    [:lens-vig    :bool    :default true]
+    [:lens-fill   :bool    :default true]
+    [:lens-id     :text    :nullable]
+    ;; focus: clarity -1..1, its radius and the blur's sigma in source px
+    [:focus-clarity :real  :default 0.0 :check [:and [>= :focus-clarity -1.0] [<= :focus-clarity 1.0]]]
+    [:focus-radius  :real  :default 80.0 :check [:and [>= :focus-radius 1.0] [<= :focus-radius 400.0]]]
+    [:focus-blur    :real  :default 0.0 :check [:and [>= :focus-blur 0.0] [<= :focus-blur 200.0]]]
     [:feather     :real    :default 24.0]
     [:mask-rev    :int     :default 0]
+    ;; what the mask was set to (almaz.segment/selections); :custom once painted
+    [:mask-sel    :keyword :default :all]
     [:done-sig    :text    :nullable]        ; the signature its output matches
     [:partial-rev :int     :nullable]        ; mask-rev of a run that skipped tiles
     [:img         :int     :nullable]        ; native handles
@@ -177,8 +206,8 @@
 (defn colour
   "A colour adjustment layer's [kind settings] (almaz.color), or nil."
   [layer]
-  (when (contains? c/settings (:kind layer))
-    [(:kind layer) (select-keys layer (keys (c/settings (:kind layer))))]))
+  (when (contains? c/kinds (:kind layer))
+    [(:kind layer) (select-keys layer (c/setting-keys (:kind layer)))]))
 
 (defn empty-db [] (rc/create-db))
 
