@@ -43,8 +43,9 @@ See [PLAN.md](PLAN.md) for the target analysis and plan.
 - **Undo / Redo** (Cmd+Z / Shift+Cmd+Z over the image, or the top bar): the
   last 10 edits per image, settings, switches, crop and turns, mask and
   repair strokes; a slider drag is one step.
-- **Autopilot** measures noise and sharpness when an image opens and switches
-  on the filters it needs at suggested strengths.
+- Filters run only when switched on. **Autopilot** (off by default in the
+  app; the command line uses it) measures noise and sharpness when an image
+  opens and switches on the filters it needs at suggested strengths.
 - On macOS the picture on screen (the layer stack, colour adjustments,
   masks, crop and rotation) and the histograms are drawn on the GPU with
   Metal, falling back to the CPU without one (`ALMAZ_GPU=0` forces it);

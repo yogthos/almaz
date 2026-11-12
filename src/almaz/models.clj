@@ -40,14 +40,20 @@
              :size 224005088
              :sha256 "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
              :inputs ["input_image"] :outputs ["output_image"] :block 1024 :channels 1 :logits true
-             :mean [0.485 0.456 0.406] :std [0.229 0.224 0.225]}
+             :mean [0.485 0.456 0.406] :std [0.229 0.224 0.225]
+             ;; Core ML rejects its deformable convolutions after ~20 s of
+             ;; compiling (and, given explicit pads, runs no faster than the CPU)
+             :cpu-only true}
    ;; Scene: UperNet + ConvNeXt-tiny (openmmlab, MIT) on ADE20K, exported by
    ;; native/tools/export_scene_seg.py with its classes summed into sky,
    ;; person and landscape probabilities.
    :scene   {:label "UperNet ConvNeXt" :file "upernet-convnext-tiny-512.onnx"
              :url (str release-v2 "upernet-convnext-tiny-512.onnx") :size 238456147
              :sha256 "255dca951c61301f38d6097508f5b0e30aaf79f4930b2c9ffe4e88ecf5461920"
-             :inputs ["image"] :outputs ["groups"] :block 512 :channels 3}})
+             :inputs ["image"] :outputs ["groups"] :block 512 :channels 3
+             ;; run once or twice per photo: the CPU's 2 s beats Core ML's
+             ;; 10 s load (53 s the first time, compiling)
+             :cpu-only true}})
 
 (defn model-dir
   "Where models live. Given {:env :os :home :xdg :dev?}: ALMAZ_MODELS when
@@ -93,17 +99,22 @@
     dir))
 
 (defn devices
-  "Device specs to try, best first."
-  []
-  (let [platform (ep/detect-platform)]
-    (ep/select-backends platform (if (= platform :macos) {:coreml true} {}))))
+  "Device specs to try, best first: for model `id`, only the CPU when the
+   registry marks it :cpu-only."
+  ([]
+   (let [platform (ep/detect-platform)]
+     (ep/select-backends platform (if (= platform :macos) {:coreml true} {}))))
+  ([id]
+   (if (get-in registry [id :cpu-only])
+     [{:backend :onnxruntime :ep :cpu}]
+     (devices))))
 
 (defonce ^:private sessions (atom {}))
 (def ^:private load-lock (Object.))
 
 (defn- load-session [id]
   (let [spec (assoc (get registry id) :artifact (artifact id))]
-    (loop [[d & more] (devices) last-error nil]
+    (loop [[d & more] (devices id) last-error nil]
       (if-not d
         (throw (ex-info (str "cannot load model " id) {:id id} last-error))
         (let [backend (ort/->OnnxruntimeBackend (:ep d))

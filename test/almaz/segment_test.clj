@@ -3,6 +3,7 @@
    synthetic output; the models themselves are tested by running the app).
    Needs native/img/build.sh."
   (:require [clojure.test :refer [deftest is testing]]
+            [almaz.models :as models]
             [almaz.pixels :as px]
             [almaz.segment :as seg]
             [jolt.ffi :as ffi]))
@@ -43,3 +44,11 @@
         (is (> (px/mask-at m 200 180) 0.95))
         (ffi/free (:ptr o))))
     (px/free-mask! m)))
+
+(deftest subject-model-devices
+  ;; Core ML can't take BiRefNet's deformable convolutions (it fails after
+  ;; ~20 s of compiling, and runs it no faster with the pads fixed), and
+  ;; loads the scene model for longer than the CPU takes to run it
+  (is (= [:cpu] (map :ep (models/devices :subject))))
+  (is (= [:cpu] (map :ep (models/devices :scene))))
+  (is (= :cpu (:ep (last (models/devices :denoise))))))

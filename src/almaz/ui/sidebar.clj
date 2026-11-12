@@ -155,9 +155,9 @@
      (when skey (strip skey f))]))
 
 ;; ---- mask ------------------------------------------------------------------------
-;; A section of its filter's panel, under a rule: where the filter applies, from
-;; the selection menu (almaz.segment: the whole image, what a model finds, or
-;; Custom, painted), its feather, and the brush while it is Custom.
+;; A section of its filter's panel, under a rule: where the filter applies. The
+;; menu starts the mask (almaz.segment: the whole image, or what a model finds);
+;; the brush refines it, shown tinted over the photo while it is out.
 (defn- mask-tools [layer tool]
   (let [lid (:id layer)
         sel (or (:mask-sel layer) :all)
@@ -170,28 +170,29 @@
       [:label {:text "Mask" :bold 1 :weight 0 :reqwidth (px 52)}]
       [:dropdown {:items seg/labels :weight 1 :value (index-of seg/keys* sel)
                   :on-change #(act/select-mask! lid (nth seg/keys* (long %)))}]]
-     (when finding
-       [:label {:key :finding :text (str (seg/describe finding) "…") :text-color [1 0.85 0.4 1]}])
+     ;; always there, so the page doesn't change height under the pointer
+     [:label {:key :finding :text (if finding (str (seg/describe finding) "…") "")
+              :text-color [1 0.85 0.4 1]}]
+     [:hbox {:key :mode :spacing 4}
+      [:label {:text "Brush" :weight 0 :reqwidth (px 52)}]
+      [:enum {:items ["Off" "Paint" "Erase"] :weight 1
+              :value (case active :paint 1 :erase 2 0)
+              :on-change #(act/set-tool! ([:pan :paint :erase] (long %)) lid)}]]
+     (when active
+       [:vbox {:key :brush :spacing 4}
+        [:slider {:label "Brush size" :min 4 :max 1500 :integer 1 :value (long (:radius tool))
+                  :on-change #(swap! s/tool* assoc :radius (double %))}]
+        [:slider {:label "Hardness" :min 0 :max 100 :integer 1 :value (pct (:hardness tool))
+                  :on-change #(swap! s/tool* assoc :hardness (/ (double %) 100.0))}]])
      [:slider {:key :feather :label "Feather" :min 0 :max 200 :integer 1 :value (long (:feather layer))
                :on-change #(act/set-feather! lid (double %))}]
      [:hbox {:key :edit :align 1}
+      [:button {:text "Fill" :on-click #(act/mask-fill! lid 1.0)}]
+      [:button {:text "Clear" :on-click #(act/mask-fill! lid 0.0)}]
       [:button {:text "Invert" :on-click #(act/mask-invert! lid)}]]
-     (when (= :custom sel)
-       [:vbox {:key :brush :spacing 4}
-        [:enum {:items ["Off" "Paint" "Erase"]
-                :value (case active :paint 1 :erase 2 0)
-                :on-change #(act/set-tool! ([:pan :paint :erase] (long %)) lid)}]
-        (when active
-          [:vbox {:key :brush-settings :spacing 4}
-           [:slider {:label "Brush size" :min 4 :max 1500 :integer 1 :value (long (:radius tool))
-                     :on-change #(swap! s/tool* assoc :radius (double %))}]
-           [:slider {:label "Hardness" :min 0 :max 100 :integer 1 :value (pct (:hardness tool))
-                     :on-change #(swap! s/tool* assoc :hardness (/ (double %) 100.0))}]
-           [:hbox {:align 1}
-            [:button {:text "Fill" :on-click #(act/mask-fill! lid 1.0)}]
-            [:button {:text "Clear" :on-click #(act/mask-fill! lid 0.0)}]]
-           [:checkbox {:label "Show mask while painting" :value (if (:show-mask tool) 1 0)
-                       :on-change #(swap! s/tool* assoc :show-mask (pos? %))}]])])]))
+     (when active
+       [:checkbox {:key :show :label "Show mask" :value (if (:show-mask tool) 1 0)
+                   :on-change #(swap! s/tool* assoc :show-mask (pos? %))}])]))
 
 ;; ---- enhance ---------------------------------------------------------------------
 (defn- layer-status [doc layer sig job]
@@ -608,6 +609,9 @@
    [:tabs {:items ["Enhance" "Color" "Dimensions"] :stretch true
            :current (index-of tabs @s/tab*)
            :on-change #(act/set-tab! (nth tabs (long %)))}
-    [:scroll {} [enhance-page]]
-    [:scroll {} [color-page]]
-    [:scroll {} [dimensions-page]]]])
+    ;; one row's natural height (not the kit's five): the window's content
+    ;; never outgrows it, so a wheel past a page's end doesn't scroll the
+    ;; whole window instead
+    [:scroll {:rows 1} [enhance-page]]
+    [:scroll {:rows 1} [color-page]]
+    [:scroll {:rows 1} [dimensions-page]]]])

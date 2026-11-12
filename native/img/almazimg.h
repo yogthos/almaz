@@ -210,6 +210,12 @@ void almz_tile_gauss(float *t, int tw, int th, float sigma);
  * brightens and `dark` where it darkens; colour follows the luminance.
  * A negative amount softens. */
 void almz_tile_local_contrast(float *t, int tw, int th, float sigma, float amount, float dark, float light);
+
+/* Focus over a whole image: dst = src with local contrast `clarity` (blur
+ * radius `radius` px, as almz_tile_local_contrast) then a gaussian blur of
+ * sigma `blur` px (as almz_tile_gauss), edges replicated. On the GPU when
+ * there is one (returns 1), else on the CPU (0); -1 for mismatched images. */
+int almz_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur);
 /* Put back `amount` of the input's fine detail the model removed:
  * out += amount * (highpass(in) - highpass(out)). */
 void almz_tile_detail(float *out, const float *in, int tw, int th, float sigma, float amount);

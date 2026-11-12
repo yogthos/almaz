@@ -618,3 +618,34 @@
         (is (< (tile-at down w h 0 62 20) 0.6))
         (is (close? 1e-3 0.3 (tile-at up w h 0 5 20)) "far from the edge: unchanged")
         (ffi/free up) (ffi/free down)))))
+
+;; Focus over a whole image: clarity then blur, on the GPU when there is one,
+;; matching the CPU's RawTherapee gaussian (to rounding and the GPU's halves).
+(deftest whole-image-focus
+  (let [w 240 h 160
+        src (filled w h (fn [x y] [(if (< x 120) 0.2 0.8) (/ y 159.0) (if (< y 80) 0.3 0.6)]))
+        run (fn [gpu? params]
+              (px/set-gpu! gpu?)
+              (let [out (px/new-image w h)]
+                (try (px/focus! out src params)
+                     (finally (px/set-gpu! true)))
+                out))
+        diff (fn [a b] (reduce max 0.0 (for [y (range 0 h 3) x (range 0 w 3) c (range 3)]
+                                           (Math/abs (- (nth (px/pixel a x y) c) (nth (px/pixel b x y) c))))))]
+    (testing "nothing to do copies the image"
+      (let [o (run false {:clarity 0.0 :radius 20.0 :blur 0.0})]
+        (is (< (diff o src) 1e-4))
+        (px/free-image! o)))
+    (testing "blur smears the edge, leaves the far side"
+      (let [o (run false {:clarity 0.0 :radius 20.0 :blur 6.0})]
+        (is (< 0.4 (first (px/pixel o 120 40)) 0.6))
+        (is (close? 0.01 0.2 (first (px/pixel o 40 40))))
+        (px/free-image! o)))
+    (testing "the GPU draws what the CPU does"
+      (doseq [params [{:clarity 0.0 :radius 20.0 :blur 6.0}
+                      {:clarity 0.6 :radius 15.0 :blur 0.0}
+                      {:clarity -0.4 :radius 25.0 :blur 3.0}]]
+        (let [g (run true params) c (run false params)]
+          (is (< (diff g c) 0.01) (str params))
+          (px/free-image! g) (px/free-image! c))))
+    (px/free-image! src)))

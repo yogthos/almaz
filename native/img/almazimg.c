@@ -82,7 +82,9 @@ int almz_gpu_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers, c
                     int out_w, int out_h, int rx, int ry, int rw, int rh, const uint8_t *bg, int level,
                     int nearest, int luma_alpha);
 void almz_gpu_forget(uint64_t uid);
+int almz_gpu_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur);
 #ifndef __APPLE__
+int almz_gpu_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur) { return 0; }
 int almz_gpu_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers, const double *xf,
                     const int32_t *clip, const AlmzMask *overlay, const float *tint, uint8_t *out,
                     int out_w, int out_h, int rx, int ry, int rw, int rh, const uint8_t *bg, int level,
@@ -557,6 +559,50 @@ void almz_tile_local_contrast(float *t, int tw, int th, float sigma, float amoun
   }
   free(L);
   free(blur);
+}
+
+typedef struct { const uint16_t *s; uint16_t *d; float *t; int w; size_t n; } focus_ctx;
+
+static void focus_in_rows(void *p, int r0, int r1) {
+  const focus_ctx *c = (const focus_ctx *)p;
+  for (int y = r0; y < r1; y++)
+    for (int x = 0; x < c->w; x++) {
+      const size_t i = (size_t)y * c->w + x;
+      for (int ch = 0; ch < 3; ch++) c->t[ch * c->n + i] = c->s[i * 3 + ch] / 65535.0f;
+    }
+}
+
+static void focus_out_rows(void *p, int r0, int r1) {
+  const focus_ctx *c = (const focus_ctx *)p;
+  for (int y = r0; y < r1; y++)
+    for (int x = 0; x < c->w; x++) {
+      const size_t i = (size_t)y * c->w + x;
+      for (int ch = 0; ch < 3; ch++)
+        c->d[i * 3 + ch] = (uint16_t)(CLAMP(c->t[ch * c->n + i], 0.0f, 1.0f) * 65535.0f + 0.5f);
+    }
+}
+
+int almz_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur) {
+  if (!dst || !src || dst->w != src->w || dst->h != src->h) return -1;
+  const int w = src->w, h = src->h;
+  const size_t n = (size_t)w * h;
+  int gpu = 0;
+  if (clarity == 0.0f && blur < 0.25f) {
+    if (dst != src) memcpy(dst->lev[0], src->lev[0], n * 3 * sizeof(uint16_t));
+  } else if (almz_gpu_focus(dst, src, clarity, radius, blur)) {
+    gpu = 1;
+  } else {
+    float *t = malloc(sizeof(float) * 3 * n);
+    if (!t) return -1;
+    focus_ctx c = {src->lev[0], dst->lev[0], t, w, n};
+    par_for(h, 16, focus_in_rows, &c);
+    if (clarity != 0.0f) almz_tile_local_contrast(t, w, h, radius, clarity, 1.0f, 1.0f);
+    if (blur >= 0.25f) almz_tile_gauss(t, w, h, blur);
+    par_for(h, 16, focus_out_rows, &c);
+    free(t);
+  }
+  almz_img_pyr_update(dst, 0, 0, w, h);
+  return gpu;
 }
 
 /* ---- lens correction ---------------------------------------------------- */

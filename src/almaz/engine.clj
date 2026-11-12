@@ -43,21 +43,6 @@
             (when (pos? detail)
               (px/detail! out in block {:sigma 1.5 :amount detail})))}))
 
-(defn focus-op
-  "Clarity (local contrast at `radius` px) then gaussian blur (sigma `blur`
-   px) over tiles large enough, with enough overlap, for both."
-  [{:keys [focus-clarity focus-radius focus-blur]}]
-  (let [clarity (double (or focus-clarity 0.0)) radius (double (or focus-radius 80.0))
-        blur (double (or focus-blur 0.0))
-        reach (max (if (zero? clarity) 0.0 radius) blur)
-        overlap (max 16 (* 16 (long (Math/ceil (/ (* 3.0 reach) 16)))))
-        block (cond (<= overlap 64) 256 (<= overlap 160) 512 (<= overlap 320) 1024 :else 2048)]
-    {:block block :overlap overlap
-     :run (fn [in out n]
-            (ffi/copy in out (* 4 n))
-            (when-not (zero? clarity) (px/local-contrast! out block block {:sigma radius :amount clarity}))
-            (when (pos? blur) (px/gauss! out block block blur)))}))
-
 (defn op-for
   "The tile operation for a layer row: {:block :overlap :run (fn [in out n])},
    where `run` turns the planar float tile at `in` into `out` (n floats).
@@ -66,7 +51,6 @@
   (case [kind model]
     [:denoise :ai] (model-op session (or detail 0.0))
     [:sharpen :ai] (model-op session 0.0)
-    [:focus :classic] (focus-op layer)
     [:sharpen :classic]
     (let [block 256
           radius (double (or radius 1.5))]
@@ -201,6 +185,19 @@
   (when (:w dc) (lens/plan (lens-photo db dc) (lens-opts layer))))
 
 (def ^:private lens-band "Rows per lens-correction step." 128)
+
+(defn focus!
+  "The Focus filter (clarity, then blur) of the composite of `base` +
+   `below` into `out`, the whole image at once (almaz.pixels/focus!, on the
+   GPU when there is one). Returns :done."
+  [{:keys [base below out layer]}]
+  (let [{:keys [focus-clarity focus-radius focus-blur]} layer
+        w (px/width base) h (px/height base)
+        src (if (seq below) (doto (px/new-image w h) (px/composite-into! base below)) base)]
+    (try
+      (px/focus! out src {:clarity focus-clarity :radius focus-radius :blur focus-blur})
+      :done
+      (finally (when-not (= src base) (px/free-image! src))))))
 
 (defn lens!
   "Undistort the composite of `base` + `below` into `out` by `plan` (an

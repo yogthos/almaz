@@ -53,6 +53,7 @@
 
 (ffi/defcfn lens-warp*      "almz_lens_warp"
   [:pointer :pointer :double :double :double :int32 :pointer :double :pointer :int32 :int32] :void :blocking)
+(ffi/defcfn focus*          "almz_focus"          [:pointer :pointer :float :float :float] :int32 :blocking)
 (ffi/defcfn sony-corrections* "almz_sony_corrections" [:pointer :pointer :pointer :pointer :int32] :int32 :blocking)
 (ffi/defcfn seg-input*      "almz_seg_input"
   [:pointer :pointer :int32 :int32 :pointer :pointer :pointer] :int32 :blocking)
@@ -380,6 +381,15 @@
   (tile-detail* out in (int size) (int size) (float sigma) (float amount)))
 
 ;; ---- lens correction ---------------------------------------------------------
+(defn focus!
+  "`dst` = `src` (same size) with local contrast `clarity` at blur radius
+   `radius` px, then a gaussian blur of sigma `blur` px, over the whole image:
+   on the GPU when there is one. True when the GPU did it."
+  [dst src {:keys [clarity radius blur]}]
+  (let [r (focus* dst src (float (or clarity 0.0)) (float (or radius 80.0)) (float (or blur 0.0)))]
+    (when (neg? r) (throw (ex-info "focus: images differ in size" {})))
+    (= 1 r)))
+
 (defn lens-warp!
   "Rows [y0, y1) of `dst` from `src` (same size) through an almaz.lens plan
    {:center [x y] :rmax :k [kr kg kb] :vrmax :vig}."

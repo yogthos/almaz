@@ -15,6 +15,7 @@
  * License: GPL-2.0-or-later. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #include <dispatch/dispatch.h>
 #include <math.h>
 #include <pthread.h>
@@ -411,6 +412,167 @@ int almz_gpu_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers, c
     if (is_enabled() && setup() == 1)
       ok = render_locked(base, layers, nlayers, xf, clip, overlay, tint, out, out_w, rx, ry, rw, rh, bg, level,
                          nearest, luma_alpha);
+  }
+  pthread_mutex_unlock(&lock);
+  return ok;
+}
+
+/* ---- focus ------------------------------------------------------------------
+ * almz_focus on the GPU: the whole image at once. Clarity is RawTherapee's
+ * local contrast (almazimg.c almz_tile_local_contrast: L* against its
+ * gaussian, the colour scaled in linear light), the blurs are Metal
+ * Performance Shaders' gaussian with clamped edges (the CPU's recursive
+ * gaussian replicates them too). Intermediates are half floats. */
+static NSString *const kFocusShader = @"#include <metal_stdlib>\n"
+"using namespace metal;\n"
+"static float s2l(float v) { return v <= 0.04045f ? v / 12.92f : pow((v + 0.055f) / 1.055f, 2.4f); }\n"
+"static float l2s(float v) { return v <= 0.0031308f ? v * 12.92f : 1.055f * pow(v, 1.0f / 2.4f) - 0.055f; }\n"
+"static float lstar(float y) { float f = y > 0.008856f ? pow(y, 1.0f / 3.0f) : 7.787f * y + 16.0f / 116.0f;\n"
+"  return (116.0f * f - 16.0f) / 100.0f; }\n"
+"static float lstar_inv(float l) { float f = (l * 100.0f + 16.0f) / 116.0f;\n"
+"  return f > 0.206893f ? f * f * f : (f - 16.0f / 116.0f) / 7.787f; }\n"
+"static float luma(float3 c) { c = clamp(c, 0.0f, 1.0f);\n"
+"  return 0.2126f * s2l(c.r) + 0.7152f * s2l(c.g) + 0.0722f * s2l(c.b); }\n"
+"kernel void focus_l(texture2d<float, access::read> src [[texture(0)]],\n"
+"                    texture2d<float, access::write> L [[texture(1)]], uint2 g [[thread_position_in_grid]]) {\n"
+"  if (g.x >= src.get_width() || g.y >= src.get_height()) return;\n"
+"  L.write(float4(lstar(luma(src.read(g).rgb))), g); }\n"
+"kernel void focus_mix(texture2d<float, access::read> src [[texture(0)]], texture2d<float, access::read> L [[texture(1)]],\n"
+"                      texture2d<float, access::read> Lb [[texture(2)]], texture2d<float, access::write> out [[texture(3)]],\n"
+"                      constant float &amount [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+"  if (g.x >= src.get_width() || g.y >= src.get_height()) return;\n"
+"  float3 c = clamp(src.read(g).rgb, 0.0f, 1.0f);\n"
+"  float l = L.read(g).r;\n"
+"  float l1 = clamp(l + (l - Lb.read(g).r) * amount, 0.0f, 1.0f);\n"
+"  float y0 = lstar_inv(l), y1 = lstar_inv(l1);\n"
+"  float3 r;\n"
+"  if (y0 > 1e-6f) { float k = y1 / y0;\n"
+"    r = float3(l2s(min(s2l(c.r) * k, 1.0f)), l2s(min(s2l(c.g) * k, 1.0f)), l2s(min(s2l(c.b) * k, 1.0f))); }\n"
+"  else r = float3(l2s(y1));\n"
+"  out.write(float4(r, 1.0f), g); }\n"
+"kernel void focus_store(texture2d<float, access::read> t [[texture(0)]], device ushort *out [[buffer(0)]],\n"
+"                        uint2 g [[thread_position_in_grid]]) {\n"
+"  uint w = t.get_width();\n"
+"  if (g.x >= w || g.y >= t.get_height()) return;\n"
+"  float3 c = clamp(t.read(g).rgb, 0.0f, 1.0f) * 65535.0f + 0.5f;\n"
+"  uint o = (g.y * w + g.x) * 3;\n"
+"  out[o] = ushort(c.r); out[o + 1] = ushort(c.g); out[o + 2] = ushort(c.b); }\n";
+
+static id<MTLComputePipelineState> focus_l_pso, focus_mix_pso, focus_store_pso;
+
+static int focus_setup(void) {
+  if (focus_store_pso) return 1;
+  if (setup() != 1 || !MPSSupportsMTLDevice(dev)) return 0;
+  NSError *err = nil;
+  id<MTLLibrary> lib = [dev newLibraryWithSource:kFocusShader options:nil error:&err];
+  if (!lib) {
+    NSLog(@"almaz: GPU focus unavailable: %@", err);
+    return 0;
+  }
+  focus_l_pso = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"focus_l"] error:&err];
+  focus_mix_pso = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"focus_mix"] error:&err];
+  id<MTLComputePipelineState> st = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"focus_store"]
+                                                                       error:&err];
+  if (!focus_l_pso || !focus_mix_pso || !st) return 0;
+  focus_store_pso = st;
+  return 1;
+}
+
+static id<MTLTexture> private_tex(MTLPixelFormat f, int w, int h) {
+  MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:f width:w height:h mipmapped:NO];
+  d.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+  d.storageMode = MTLStorageModePrivate;
+  return [dev newTextureWithDescriptor:d];
+}
+
+static void dispatch2d(id<MTLComputeCommandEncoder> enc, id<MTLComputePipelineState> p, int w, int h) {
+  [enc setComputePipelineState:p];
+  const NSUInteger tw = p.threadExecutionWidth, th = MAX(1, p.maxTotalThreadsPerThreadgroup / tw);
+  [enc dispatchThreads:MTLSizeMake(w, h, 1) threadsPerThreadgroup:MTLSizeMake(tw, MIN(th, 16), 1)];
+}
+
+static int focus_locked(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur) {
+  const int w = src->w, h = src->h;
+  const NSUInteger maxd = 16384;
+  if (w > (int)maxd || h > (int)maxd || !focus_setup()) return 0;
+  /* the source, as RGBA16 (not cached: a one-off, often a whole raw) */
+  MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Unorm
+                                                                               width:w height:h mipmapped:NO];
+  d.usage = MTLTextureUsageShaderRead;
+  d.storageMode = MTLStorageModeShared;
+  id<MTLTexture> in = [dev newTextureWithDescriptor:d];
+  if (!in) return 0;
+  const int band = 256;
+  uint16_t *rgba = (uint16_t *)malloc((size_t)w * band * 4 * sizeof(uint16_t));
+  if (!rgba) return 0;
+  for (int y0 = 0; y0 < h; y0 += band) {
+    const int bh = MIN(band, h - y0);
+    dispatch_apply((size_t)bh, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t y) {
+      const uint16_t *s = src->lev[0] + (size_t)(y0 + y) * w * 3;
+      uint16_t *o = rgba + (size_t)y * w * 4;
+      for (int x = 0; x < w; x++, s += 3, o += 4) {
+        o[0] = s[0];
+        o[1] = s[1];
+        o[2] = s[2];
+        o[3] = 65535;
+      }
+    });
+    [in replaceRegion:MTLRegionMake2D(0, y0, w, bh) mipmapLevel:0 withBytes:rgba bytesPerRow:(NSUInteger)w * 8];
+  }
+  free(rgba);
+
+  const NSUInteger out_len = (NSUInteger)w * h * 3 * sizeof(uint16_t);
+  id<MTLBuffer> out = [dev newBufferWithLength:out_len options:MTLResourceStorageModeShared];
+  if (!out) return 0;
+  id<MTLCommandBuffer> cb = [queue commandBuffer];
+  id<MTLTexture> cur = in;
+  if (clarity != 0.0f) {
+    id<MTLTexture> L = private_tex(MTLPixelFormatR32Float, w, h), Lb = private_tex(MTLPixelFormatR32Float, w, h);
+    id<MTLTexture> mid = private_tex(MTLPixelFormatRGBA16Float, w, h);
+    if (!L || !Lb || !mid) return 0;
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setTexture:in atIndex:0];
+    [enc setTexture:L atIndex:1];
+    dispatch2d(enc, focus_l_pso, w, h);
+    [enc endEncoding];
+    MPSImageGaussianBlur *g = [[MPSImageGaussianBlur alloc] initWithDevice:dev sigma:MAX(radius, 0.25f)];
+    g.edgeMode = MPSImageEdgeModeClamp;
+    [g encodeToCommandBuffer:cb sourceTexture:L destinationTexture:Lb];
+    enc = [cb computeCommandEncoder];
+    [enc setTexture:in atIndex:0];
+    [enc setTexture:L atIndex:1];
+    [enc setTexture:Lb atIndex:2];
+    [enc setTexture:mid atIndex:3];
+    [enc setBytes:&clarity length:sizeof clarity atIndex:0];
+    dispatch2d(enc, focus_mix_pso, w, h);
+    [enc endEncoding];
+    cur = mid;
+  }
+  if (blur >= 0.25f) {
+    id<MTLTexture> b = private_tex(MTLPixelFormatRGBA16Float, w, h);
+    if (!b) return 0;
+    MPSImageGaussianBlur *g = [[MPSImageGaussianBlur alloc] initWithDevice:dev sigma:blur];
+    g.edgeMode = MPSImageEdgeModeClamp;
+    [g encodeToCommandBuffer:cb sourceTexture:cur destinationTexture:b];
+    cur = b;
+  }
+  id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+  [enc setTexture:cur atIndex:0];
+  [enc setBuffer:out offset:0 atIndex:0];
+  dispatch2d(enc, focus_store_pso, w, h);
+  [enc endEncoding];
+  [cb commit];
+  [cb waitUntilCompleted];
+  if (cb.status != MTLCommandBufferStatusCompleted) return 0;
+  memcpy(dst->lev[0], out.contents, out_len);
+  return 1;
+}
+
+int almz_gpu_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur) {
+  int ok = 0;
+  pthread_mutex_lock(&lock);
+  @autoreleasepool {
+    if (is_enabled()) ok = focus_locked(dst, src, clarity, radius, blur);
   }
   pthread_mutex_unlock(&lock);
   return ok;

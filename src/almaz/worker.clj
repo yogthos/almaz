@@ -116,6 +116,7 @@
                  :lens (eng/lens! {:base base :below below :out out
                                    :plan (eng/lens-plan @s/db* dc layer)
                                    :progress (report-progress label) :cancelled? cancelled?})
+                 :focus (eng/focus! {:base base :below below :out out :layer layer})
                  (eng/process! {:base base :below below :out out :mask (:mask layer)
                                 :op (eng/op-for layer (session-for layer label))
                                 :focus (focus dc)

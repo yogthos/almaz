@@ -10,7 +10,7 @@ if [ "$(uname)" = "Darwin" ]; then
   clang -c -std=c11 -O3 -Wall -Wno-unused-function -I"$P/include" -o lib/almazimg.o almazimg.c
   clang -c -O3 -Wall -fobjc-arc -o lib/almazimg_metal.o almazimg_metal.m
   clang -dynamiclib -O3 -I"$P/include" -o lib/libalmazimg.dylib lib/almazimg.o lib/almazimg_metal.o inpaint.c exif.c sha256.c \
-    -L"$P/lib" -ljpeg -lpng16 -ltiff -lm -lpthread -framework Metal -framework Foundation
+    -L"$P/lib" -ljpeg -lpng16 -ltiff -lm -lpthread -framework Metal -framework MetalPerformanceShaders -framework Foundation
   rm -f lib/almazimg.o lib/almazimg_metal.o
   echo "built lib/libalmazimg.dylib"
 else

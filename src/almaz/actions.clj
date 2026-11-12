@@ -217,22 +217,23 @@
 
 (defn select-mask!
   "Set layer `lid`'s mask to a selection (almaz.segment/selections): :all
-   fills it, :custom keeps it for the brush, the others are found by a
-   model on the worker. An undo step (but for :custom, which changes no
+   fills it, :custom keeps it, the others are found by a model on the
+   worker. The brush comes out on the layer, the mask shown, to see the
+   selection and refine it. An undo step (but for :custom, which changes no
    pixels)."
   [lid sel]
   (when-let [id (cur-id)]
     (when-not (= :custom sel) (record! nil [lid]))
     (s/edit! id d/update-layer lid assoc :mask-sel sel)
     (reset! s/mask-req* nil)
+    (swap! s/tool* assoc :mode :paint :layer lid :pick nil :show-mask true)
     (case sel
       :all (when-let [m (:mask (s/layer lid))]
              (px/mask-fill! m 1.0)
              (s/edit! id d/bump-mask lid)
              (s/bump-pixels!))
-      :custom (swap! s/tool* assoc :mode :paint :layer lid :pick nil)
-      (do (when (= lid (:layer @s/tool*)) (swap! s/tool* assoc :mode :pan :layer nil))
-          (reset! s/mask-req* {:doc id :layer lid :sel sel})
+      :custom nil
+      (do (reset! s/mask-req* {:doc id :layer lid :sel sel})
           (s/wake!)))))
 
 (defn set-tool! [mode lid]
