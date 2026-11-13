@@ -44,10 +44,7 @@
 (defn panel [width]
   (let [doc (s/current-doc)
         settings @s/export-settings*]
-    ;; a :column, not the sidebar's :vbox: swapping one for the other then
-    ;; replaces the subtree instead of diffing the children, which glimmer
-    ;; gets out of order (a replaced child lands first)
-    [:column {:weight 0 :reqwidth (px width) :padding (px 8) :spacing (px 8)}
+    [:vbox {:weight 0 :reqwidth (px width) :padding (px 8) :spacing (px 8)}
      [:label {:text "Export" :bold 1 :font-scale 1.3}]
      (row "Format:"
           [:dropdown {:items (mapv second ex/formats) :weight 1

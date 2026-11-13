@@ -8,8 +8,8 @@
  ;; GPL-2.0+; glimmer-gl/glimmer-gtk = image pane (textured quad + blit), same
  ;; pins splat-painter uses.
  :deps {jolt-lang/glimmer  {:git/url "https://github.com/jolt-lang/glimmer"
-                            :git/tag "v0.1.4"
-                            :git/sha "09b8ab08705fa1e6f20145c2e99eaaba9ea812cc"}
+                            :git/tag "v0.1.8"
+                            :git/sha "7f00d14d1b3c6239638d03780006c4a76fca379f"}
         ;; BUI (Blender-look) backend; GPL-2.0+
         jlt-commons/glimmer-bui {:git/url "https://github.com/jlt-commons/glimmer-bui"
                                  :git/tag "v0.1.2"
