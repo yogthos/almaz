@@ -1,8 +1,8 @@
 <p align="center">
   <img src="img/almaz_icon.svg" alt="Almaz logo" width="128">
 </p>
-
-# almaz
+<h1 align="center">Almaz</h1>
+<br/>
 
 ![Almaz screenshot](img/almaz.png)
 
@@ -117,54 +117,6 @@ kind, at its kind's position, in a document's stack
 crop are columns of its row (`almaz.geom`). Functions take the db and return the new one; the
 app keeps it in one reactive cell (`almaz.state/db*`). UI-only state (view,
 tool, selection, job progress) stays in plain cells.
-
-## Layout
-
-```
-src/almaz/
-  core.clj              the app: layout + -main
-  ui/canvas.clj         image pane: rendering, overlays, pan/zoom/brush input
-  ui/sidebar.clj        histogram, navigator, autopilot, the Enhance / Color /
-                        Dimensions tabs + mask tools
-  ui/chrome.clj         top bar, status bar, filmstrip
-  ui/export.clj         export panel: format settings, colour profile, size
-  ui/shortcuts.clj      binds the keyboard shortcuts (glimmer-bui bind-key!)
-  ui/drop.clj           files dropped on the window or opened with the app (FFI)
-  ui/units.clj          sizes in widget units (HiDPI)
-  state.clj             reactive state: the relatum db + UI cells
-  actions.clj           user commands
-  worker.clj            background thread: what to do next; processing, export
-  loading.clj           decoding, previews, thumbnails (for the worker)
-  lifecycle.clj         native memory ownership (frees on the UI thread)
-  doc.clj               data model: relatum tables (:doc, :layer), staleness
-  view.clj              viewport math (pure)
-  export.clj            export settings -> writer options, size labels (pure)
-  keys.clj              keyboard shortcuts and their labels per platform (pure)
-  files.clj             which files are images; what a dropped folder holds
-  geom.clj              orientation, crop, display <-> source mapping (pure)
-  color.clj             colour adjustments and their tables (pure)
-  history.clj           undo / redo snapshots and stack (pure)
-  tables.clj            colour tables built off the UI thread
-  autopilot.clj         estimates -> layers (pure)
-  engine.clj            runs one layer over the composite, tile by tile
-  models.clj            model registry + sessions
-  pixels.clj            FFI: native pixel engine
-  raw.clj               FFI: LibRaw shim
-  infer/                backend protocol, EP selection, tile planning,
-                        ONNX Runtime + Core ML backends
-native/
-  img/                  pixel engine (C): 16-bit images + mip pyramid, masks,
-                        compositing, tiles, filters, estimators, file I/O;
-                        almazimg_metal.m draws the composite with Metal
-                        inpaint.c fills repairs (PatchMatch + healing)
-  onnxruntime/          C++ shim over ONNX Runtime (CPU, CoreML, CUDA EPs)
-  raw/                  C++ shim over LibRaw
-  coreml/               ObjC++ shim over Core ML (.mlmodelc)
-  patches/              our changes to the BUI kit (trackpad scrolling; file
-                        drops via Cocoa and XDND, and Open With)
-  tools/                model export scripts, native build, packaging
-test/almaz/             clojure.test suites (pure + native)
-```
 
 ## Build
 
