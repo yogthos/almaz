@@ -1,18 +1,19 @@
 ;; Package Almaz.app for macOS (arm64): `jolt dist`.
 ;;
 ;; 1. `jolt build` the app into Contents/MacOS.
-;; 2. Copy almaz's native libraries and the BUI kit into Contents/Frameworks,
+;; 2. Render img/almaz_icon.svg into Contents/Resources/Almaz.icns.
+;; 3. Copy almaz's native libraries and the BUI kit into Contents/Frameworks,
 ;;    then every non-system library they load, recursively (Homebrew's ONNX
 ;;    Runtime alone pulls in ~80). Each copy gets an @rpath install name, its
 ;;    references are rewritten to @rpath, and it carries @loader_path as an
 ;;    rpath, so the bundle never touches /opt/homebrew.
-;; 3. The bundle's executable is a launcher that puts Contents/Frameworks on
+;; 4. The bundle's executable is a launcher that puts Contents/Frameworks on
 ;;    DYLD_LIBRARY_PATH and execs the jolt binary: dyld then finds every library
 ;;    by its file name there first, which covers both the build-machine paths a
 ;;    `jolt build` bakes in for :jolt/native candidates and bare names like
 ;;    glimmer-bui's libbui.dylib. (Signing with hardened runtime for
 ;;    notarization needs the allow-dyld-environment-variables entitlement.)
-;; 4. Write Info.plist, sign every library and then the bundle (ad-hoc, or
+;; 5. Write Info.plist, sign every library and then the bundle (ad-hoc, or
 ;;    the identity in ALMAZ_SIGN_IDENTITY), verify, and zip it.
 ;;
 ;; Models aren't bundled: the app downloads them on first use.
@@ -63,6 +64,31 @@ exec \"$here/almaz-bin\" \"$@\"
              (str (System/getenv "HOME") "/src/bui-src/lib/libbui.dylib")
              (str (System/getenv "HOME") "/src/jlt-commons/glimmer-bui/lib/libbui.dylib")])
       (throw (ex-info "libbui.dylib not found; set BUI_LIB" {}))))
+
+(def icon-svg (file here ".." ".." "img" "almaz_icon.svg"))
+
+(def iconset-sizes
+  [["icon_16x16.png" 16]     ["icon_16x16@2x.png" 32]
+   ["icon_32x32.png" 32]     ["icon_32x32@2x.png" 64]
+   ["icon_128x128.png" 128]  ["icon_128x128@2x.png" 256]
+   ["icon_256x256.png" 256]  ["icon_256x256@2x.png" 512]
+   ["icon_512x512.png" 512]  ["icon_512x512@2x.png" 1024]])
+
+(defn build-icon!
+  "Render img/almaz_icon.svg at every iconset size and pack an .icns."
+  []
+  (when-not (exists? icon-svg)
+    (throw (ex-info (str icon-svg " is missing") {})))
+  (let [iconset "target/Almaz.iconset"
+        out (str contents "/Resources/Almaz.icns")]
+    (sh "rm" "-rf" iconset)
+    (.mkdirs (file iconset))
+    (doseq [[name size] iconset-sizes]
+      (sh "sips" "-s" "format" "png"
+          "--resampleHeightWidth" size size
+          icon-svg "--out" (str iconset "/" name)))
+    (sh "iconutil" "-c" "icns" iconset "-o" out)
+    (log "wrote" out)))
 
 (defn system-lib? [path]
   (or (str/starts-with? path "/usr/lib/") (str/starts-with? path "/System/")))
@@ -116,6 +142,7 @@ exec \"$here/almaz-bin\" \"$@\"
   <key>CFBundleDisplayName</key><string>Almaz</string>
   <key>CFBundleIdentifier</key><string>io.github.yogthos.almaz</string>
   <key>CFBundleExecutable</key><string>" exe-name "</string>
+  <key>CFBundleIconFile</key><string>Almaz</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>" version "</string>
   <key>CFBundleVersion</key><string>" version "</string>
@@ -123,6 +150,28 @@ exec \"$here/almaz-bin\" \"$@\"
   <key>LSArchitecturePriority</key><array><string>arm64</string></array>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>GPL-2.0-or-later</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>Image</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.jpeg</string>
+        <string>public.png</string>
+        <string>public.tiff</string>
+        <string>public.camera-raw-image</string>
+        <string>com.adobe.raw-image</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Folder</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>None</string>
+      <key>LSItemContentTypes</key><array><string>public.folder</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 "))
@@ -141,6 +190,8 @@ exec \"$here/almaz-bin\" \"$@\"
   (.mkdirs (file contents "MacOS"))
   (.mkdirs (file frameworks))
   (.mkdirs (file contents "Resources"))
+  (log "building the icon")
+  (build-icon!)
   (log "building the executable")
   (sh "jolt" "build" "-m" "almaz.core" "--signable" "-o" (str contents "/MacOS/" bin-name))
   (sh "rm" "-rf" (str contents "/MacOS/" bin-name ".build"))

@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Multi-layered shadow for universal visibility on light/dark backgrounds -->
+    <filter id="glow-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#5881D8" flood-opacity="0.3" />
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#1A2A40" flood-opacity="0.2" />
+    </filter>
+    
+    <!-- 
+      Crown Gradients (Top Half) 
+      Bridging from Clojure Green (#91CA47) to Clojure Blue (#5881D8)
+    -->
+    <linearGradient id="g-top-left" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#CBEF92" />
+      <stop offset="100%" stop-color="#99D34A" />
+    </linearGradient>
+    
+    <linearGradient id="g-top-in-left" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#B2E06A" />
+      <stop offset="100%" stop-color="#87C138" />
+    </linearGradient>
+    
+    <!-- Horizontal bridge for the top center facet to look solid, flat, and uniformly lit -->
+    <linearGradient id="g-top-center" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#B2E06A" />
+      <stop offset="50%" stop-color="#91CDCC" />
+      <stop offset="100%" stop-color="#8BB1F3" />
+    </linearGradient>
+    
+    <linearGradient id="g-top-in-right" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#91B3F2" />
+      <stop offset="100%" stop-color="#658EE2" />
+    </linearGradient>
+    
+    <linearGradient id="g-top-right" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#A3C2F7" />
+      <stop offset="100%" stop-color="#5D87DF" />
+    </linearGradient>
+    
+    <!-- Pavilion Gradients (Bottom Half) -->
+    <linearGradient id="g-bot-left" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#8CC63F" />
+      <stop offset="100%" stop-color="#4F781B" />
+    </linearGradient>
+    
+    <linearGradient id="g-bot-in-left" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#79B030" />
+      <stop offset="100%" stop-color="#3D6011" />
+    </linearGradient>
+    
+    <linearGradient id="g-bot-in-right" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#527ACD" />
+      <stop offset="100%" stop-color="#243F7A" />
+    </linearGradient>
+    
+    <linearGradient id="g-bot-right" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#5983DA" />
+      <stop offset="100%" stop-color="#2D4B89" />
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#glow-shadow)">
+    <!-- 
+      Solid Base Silhouette 
+      Prevents microscopic anti-aliasing gaps between polygons from showing the background
+    -->
+    <polygon points="176,96 336,96 464,224 256,464 48,224" fill="#6EBCBA" />
+
+    <!-- 
+      9 Perfect Geometric Facets 
+    -->
+    <!-- Top Left Outer -->
+    <polygon points="176,96 48,224 176,224" fill="url(#g-top-left)" />
+    <!-- Top Inner Left -->
+    <polygon points="176,96 176,224 256,224" fill="url(#g-top-in-left)" />
+    <!-- Top Center -->
+    <polygon points="176,96 336,96 256,224" fill="url(#g-top-center)" />
+    <!-- Top Inner Right -->
+    <polygon points="336,96 256,224 336,224" fill="url(#g-top-in-right)" />
+    <!-- Top Right Outer -->
+    <polygon points="336,96 336,224 464,224" fill="url(#g-top-right)" />
+    
+    <!-- Bottom Left Outer -->
+    <polygon points="48,224 176,224 256,464" fill="url(#g-bot-left)" />
+    <!-- Bottom Inner Left -->
+    <polygon points="176,224 256,224 256,464" fill="url(#g-bot-in-left)" />
+    <!-- Bottom Inner Right -->
+    <polygon points="256,224 336,224 256,464" fill="url(#g-bot-in-right)" />
+    <!-- Bottom Right Outer -->
+    <polygon points="336,224 464,224 256,464" fill="url(#g-bot-right)" />
+  </g>
+  
+  <!-- 
+    Edge Highlights (Bevels)
+    Simulates hard light hitting the glass/diamond edges 
+  -->
+  <!-- Girdle Highlight (Middle horizontal seam) -->
+  <polyline points="48,224 176,224 256,224 336,224 464,224" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.4" />
+  
+  <!-- Top Table Highlight -->
+  <line x1="176" y1="96" x2="336" y2="96" stroke="#FFFFFF" stroke-width="3" opacity="0.7" />
+  
+  <!-- Center Vertical Split Highlight -->
+  <line x1="256" y1="224" x2="256" y2="464" stroke="#FFFFFF" stroke-width="1.5" opacity="0.3" />
+  
+  <!-- Top Inner V-Shape Highlights -->
+  <line x1="176" y1="96" x2="256" y2="224" stroke="#FFFFFF" stroke-width="1.5" opacity="0.5" />
+  <line x1="336" y1="96" x2="256" y2="224" stroke="#FFFFFF" stroke-width="1.5" opacity="0.5" />
+  
+  <!-- Outer Perimeter Sparkle Line -->
+  <polyline points="176,96 48,224 256,464 464,224 336,96" fill="none" stroke="#FFFFFF" stroke-width="1" opacity="0.2" />
+</svg>
