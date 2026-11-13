@@ -12,8 +12,8 @@
                             :git/sha "7f00d14d1b3c6239638d03780006c4a76fca379f"}
         ;; BUI (Blender-look) backend; GPL-2.0+
         jlt-commons/glimmer-bui {:git/url "https://github.com/jlt-commons/glimmer-bui"
-                                 :git/tag "v0.1.2"
-                                 :git/sha "aec93b499d01738a2ccab8785f0b92e944c18760"}
+                                 :git/tag "v0.1.3"
+                                 :git/sha "314f3dba4a51a28bf7c879671a5287a2d33fe26c"}
         ;; in-memory relational store: the document/layer data model
         yogthos/relatum {:git/url "https://github.com/yogthos/relatum"
                          :git/tag "v0.4.0"
