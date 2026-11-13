@@ -1,8 +1,8 @@
 <p align="center">
   <img src="img/almaz_icon.svg" alt="Almaz logo" width="128">
 </p>
-
-# almaz
+<h1 align="center">Almaz</h1>
+<br/>
 
 ![Almaz screenshot](img/almaz.png)
 
