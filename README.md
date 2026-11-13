@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="img/almaz_icon.svg" alt="Almaz logo" width="128">
+</p>
+
 # almaz
+
+![Almaz screenshot](img/almaz.png)
 
 AI **denoise** and **sharpen** for photos (camera RAW, JPEG, PNG, TIFF) as a
 native Clojure-on-Jolt app with a Blender-style UI (`glimmer-bui`). Inference
