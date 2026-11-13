@@ -649,3 +649,95 @@
           (is (< (diff g c) 0.01) (str params))
           (px/free-image! g) (px/free-image! c))))
     (px/free-image! src)))
+
+(defn- file-bytes [path]
+  (with-open [in (java.io.FileInputStream. (java.io.File. path))]
+    (let [out (java.io.ByteArrayOutputStream.)]
+      (.transferTo in out)
+      (.toByteArray out))))
+
+(defn- contains-ascii? [^bytes bs ^String s]
+  (let [n (alength bs) m (count s)
+        pat (mapv int s)]
+    (boolean (some (fn [i] (every? #(= (pat %) (bit-and 0xff (aget bs (+ i %)))) (range m)))
+                   (range (- n m -1))))))
+
+(deftest colour-profiles
+  (let [img (filled 16 12 (constantly [1.0 0.0 0.0]))   ; sRGB's red primary
+        dir (str (or (System/getenv "TMPDIR") "/tmp/") "almaz-icc-" (System/currentTimeMillis))]
+    (.mkdirs (java.io.File. dir))
+    (doseq [[fmt ext] [[:jpeg "jpg"] [:png16 "png"] [:png8 "png"] [:tiff16 "tif"]]]
+      (testing (name fmt)
+        (let [path #(str dir "/" (name %) "-" (name fmt) "." ext)]
+          (px/save-image! img [] {:path (path :p3) :format fmt :quality 95 :profile :p3})
+          (px/save-image! img [] {:path (path :adobe) :format fmt :quality 95 :profile :adobe})
+          (px/save-image! img [] {:path (path :srgb) :format fmt :quality 95 :profile :srgb})
+          (px/save-image! img [] {:path (path :none) :format fmt :quality 95 :profile :none})
+          (testing "the profile is embedded, named"
+            (is (contains-ascii? (file-bytes (path :p3)) "Display P3"))
+            (is (contains-ascii? (file-bytes (path :adobe)) "Adobe RGB (1998)"))
+            (is (not (contains-ascii? (file-bytes (path :none)) "acsp")) "untagged: no ICC profile"))
+          (testing "sRGB is tagged too (PNG's sRGB chunk, an ICC profile elsewhere)"
+            (is (contains-ascii? (file-bytes (path :srgb)) (if (#{:png16 :png8} fmt) "sRGB" "sRGB IEC61966-2.1"))))
+          (testing "the pixels are converted into the profile's space"
+            (let [eps (if (= fmt :jpeg) 0.03 0.004)
+                  px* (fn [k] (let [b (px/load-image (path k))]
+                                (try (px/pixel b 8 6) (finally (px/free-image! b)))))]
+              ;; sRGB (1,0,0) is (0.9175, 0.2003, 0.1387) in Display P3 and
+              ;; (0.8590, 0, 0) in Adobe RGB
+              (is (every? true? (map (partial close? eps) [0.9175 0.2003 0.1387] (px* :p3))) (pr-str (px* :p3)))
+              (is (every? true? (map (partial close? eps) [0.8590 0.0 0.0] (px* :adobe))) (pr-str (px* :adobe)))
+              (is (every? true? (map (partial close? eps) [1.0 0.0 0.0] (px* :srgb)))))))))
+    (testing "the metadata still comes along with a profile"
+      (let [path (str dir "/meta.jpg")]
+        (px/save-image! img [] {:path path :format :jpeg :quality 90 :profile :p3 :meta sample-meta})
+        (is (meta-close? sample-meta (px/read-meta path)))))
+    (px/free-image! img)))
+
+(deftest compression-settings
+  (let [rng (java.util.Random. 7)
+        img (filled 256 192 (fn [x y] (map #(+ % (gauss rng 0.05)) [(/ x 256.0) (/ y 192.0) 0.4])))
+        dir (str (or (System/getenv "TMPDIR") "/tmp/") "almaz-cmp-" (System/currentTimeMillis))
+        size #(.length (java.io.File. ^String %))]
+    (.mkdirs (java.io.File. dir))
+    (testing "JPEG quality trades size"
+      (px/save-image! img [] {:path (str dir "/q30.jpg") :format :jpeg :quality 30})
+      (px/save-image! img [] {:path (str dir "/q95.jpg") :format :jpeg :quality 95})
+      (is (< (size (str dir "/q30.jpg")) (size (str dir "/q95.jpg")))))
+    (testing "PNG level 0 stores, 9 compresses"
+      (px/save-image! img [] {:path (str dir "/l0.png") :format :png8 :compression 0})
+      (px/save-image! img [] {:path (str dir "/l9.png") :format :png8 :compression 9})
+      (is (< (size (str dir "/l9.png")) (size (str dir "/l0.png")))))
+    (testing "TIFF: none, LZW and Deflate all read back"
+      (doseq [c [0 1 2]]
+        (let [p (str dir "/c" c ".tif")]
+          (px/save-image! img [] {:path p :format :tiff16 :compression c})
+          (let [b (px/load-image p)]
+            (is (every? true? (map (partial close? 1e-4) (px/pixel img 30 40) (px/pixel b 30 40))))
+            (px/free-image! b))))
+      (is (< (size (str dir "/c2.tif")) (size (str dir "/c0.tif")))))
+    (px/free-image! img)))
+
+(deftest size-estimate
+  (let [rng (java.util.Random. 3)
+        img (filled 600 900 (fn [x y] (map #(+ % (gauss rng 0.02))
+                                             [(/ x 600.0) (/ y 900.0) (+ 0.3 (* 0.2 (Math/sin (/ x 20.0))))])))
+        dir (str (or (System/getenv "TMPDIR") "/tmp/") "almaz-est-" (System/currentTimeMillis))]
+    (.mkdirs (java.io.File. dir))
+    (doseq [[opts ext] [[{:format :jpeg :quality 90 :profile :srgb} "jpg"]
+                        [{:format :jpeg :quality 40 :profile :p3 :meta sample-meta} "jpg"]
+                        [{:format :png8 :compression 6 :profile :srgb} "png"]
+                        [{:format :png16 :compression 1 :profile :adobe} "png"]
+                        [{:format :tiff16 :compression 2 :profile :p3} "tif"]]]
+      (testing (pr-str opts)
+        (let [path (str dir "/e." ext)
+              est (px/estimate-size img [] opts)]
+          (px/save-image! img [] (assoc opts :path path))
+          (let [real (.length (java.io.File. path))]
+            (is (< (Math/abs (- 1.0 (/ (double est) real))) 0.15) (str "estimate " est " vs " real))))))
+    (testing "the estimate follows the output geometry"
+      (let [full (px/estimate-size img [] {:format :png8 :compression 6})
+            half (px/estimate-size img [] {:format :png8 :compression 6 :size [300 450]
+                                           :xf [2.0 0.0 0.0 0.0 2.0 0.0]})]
+        (is (< half (* 0.6 full)))))
+    (px/free-image! img)))

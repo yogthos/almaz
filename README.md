@@ -13,6 +13,11 @@ See [PLAN.md](PLAN.md) for the target analysis and plan.
   JPEG / PNG / TIFF (8 and 16 bit). The camera's embedded preview shows while
   the RAW decodes. RAW files keep the exposure they were shot at: no
   automatic brightening.
+- **Adding images**: Add images (⌘O / Ctrl+O), drag files or folders from
+  Finder or the file manager onto the window, or open them with Almaz (Finder's
+  Open With or the Dock icon, Nautilus' Open With, or as arguments:
+  `Almaz *.NEF`). A folder adds the images directly in it, and the first image
+  handed over is shown.
 - **Filters are layers**, one of each, at a fixed place in the pipeline and
   switched on and off from their panel's header (changing a setting switches
   it on). Each runs over the composite of the layers below it and blends back
@@ -41,7 +46,7 @@ See [PLAN.md](PLAN.md) for the target analysis and plan.
   from the matched patches. It's a layer like the others: its mask is what's
   repaired, Restore paints a repair away, and repairs re-run when a layer
   below them changes.
-- **Undo / Redo** (Cmd+Z / Shift+Cmd+Z over the image, or the top bar): the
+- **Undo / Redo** (⌘Z / ⇧⌘Z, Ctrl+Z / Ctrl+Shift+Z on Linux, or the top bar): the
   last 10 edits per image, settings, switches, crop and turns, mask and
   repair strokes; a slider drag is one step.
 - Filters run only when switched on. **Autopilot** (off by default in the
@@ -64,14 +69,36 @@ See [PLAN.md](PLAN.md) for the target analysis and plan.
   100%.
 - Filmstrip of opened images; only the current one keeps full-resolution
   pixels.
-- Export the full-resolution composite, cropped and turned, as JPEG, 16-bit TIFF, or 8/16-bit PNG,
-  keeping the photo's shooting metadata (camera, lens, exposure, aperture, ISO,
+- Export (⌘E / Ctrl+E) the full-resolution composite, cropped and turned, as JPEG (quality), 16-bit
+  TIFF (no/LZW/Deflate compression), or 8/16-bit PNG (zlib level), in sRGB, Display P3 or Adobe RGB
+  with the ICC profile embedded. The export panel shows the dimensions and an estimated file size. Exports
+  keep the photo's shooting metadata (camera, lens, exposure, aperture, ISO,
   focal length, capture time) as EXIF. It is read from the source's own EXIF
   (JPEG, PNG, and TIFF-based RAW such as NEF/ARW/DNG/CR2) or, for other RAW
   formats, from LibRaw.
 
 Timings on an M-series Mac (Core ML), 45 MP Nikon Z9 file: decode ~3 s,
 denoise ~45 s, sharpen ~45 s for the whole frame, export ~6 s.
+
+## Keyboard shortcuts
+
+| Action | macOS | Linux |
+|---|---|---|
+| Add images | ⌘O | Ctrl+O |
+| Export panel; again: choose where to save | ⌘E | Ctrl+E |
+| Close the export panel | Esc | Esc |
+| Undo | ⌘Z | Ctrl+Z |
+| Redo | ⇧⌘Z | Ctrl+Shift+Z or Ctrl+Y |
+| Zoom to fit | ⌘0 | Ctrl+0 |
+| Zoom to 100% | ⌘1 | Ctrl+1 |
+| Zoom in / out | ⌘= / ⌘- | Ctrl+= / Ctrl+- |
+| Quit | ⌘Q | Ctrl+Q |
+
+Over the image: hold Space and drag to pan, R picks the Repair brush, the
+wheel zooms about the pointer, and a double-click toggles fit and 100%. The
+shortcuts work wherever the pointer is, but not while a text field is being
+edited (there ⌘Z / Ctrl+Z undoes the typing). They are listed in
+`src/almaz/keys.clj`.
 
 ## Data model
 
@@ -94,6 +121,9 @@ src/almaz/
   ui/sidebar.clj        histogram, navigator, autopilot, the Enhance / Color /
                         Dimensions tabs + mask tools
   ui/chrome.clj         top bar, status bar, filmstrip
+  ui/export.clj         export panel: format settings, colour profile, size
+  ui/shortcuts.clj      binds the keyboard shortcuts (glimmer-bui bind-key!)
+  ui/drop.clj           files dropped on the window or opened with the app (FFI)
   ui/units.clj          sizes in widget units (HiDPI)
   state.clj             reactive state: the relatum db + UI cells
   actions.clj           user commands
@@ -102,6 +132,9 @@ src/almaz/
   lifecycle.clj         native memory ownership (frees on the UI thread)
   doc.clj               data model: relatum tables (:doc, :layer), staleness
   view.clj              viewport math (pure)
+  export.clj            export settings -> writer options, size labels (pure)
+  keys.clj              keyboard shortcuts and their labels per platform (pure)
+  files.clj             which files are images; what a dropped folder holds
   geom.clj              orientation, crop, display <-> source mapping (pure)
   color.clj             colour adjustments and their tables (pure)
   history.clj           undo / redo snapshots and stack (pure)
@@ -121,7 +154,9 @@ native/
   onnxruntime/          C++ shim over ONNX Runtime (CPU, CoreML, CUDA EPs)
   raw/                  C++ shim over LibRaw
   coreml/               ObjC++ shim over Core ML (.mlmodelc)
-  tools/                model export scripts
+  patches/              our changes to the BUI kit (trackpad scrolling; file
+                        drops via Cocoa and XDND, and Open With)
+  tools/                model export scripts, native build, packaging
 test/almaz/             clojure.test suites (pure + native)
 ```
 
@@ -228,7 +263,10 @@ bundle's executable is a small launcher that puts `Contents/Frameworks` on
 runtime needs the `com.apple.security.cs.allow-dyld-environment-variables`
 entitlement). Apple Silicon only; models are downloaded on first use rather than
 bundled. The launcher also serves the command line:
-`Almaz.app/Contents/MacOS/Almaz --help`.
+`Almaz.app/Contents/MacOS/Almaz --help`. Info.plist declares JPEG, PNG, TIFF
+and camera RAW (`public.camera-raw-image`) as documents Almaz can open, so it
+appears in Finder's Open With; those files reach the running app as Apple
+events, not arguments.
 
 On Linux it writes `target/Almaz-linux-<arch>/` and
 `target/Almaz-<version>-linux-<arch>.tar.gz`:
@@ -239,7 +277,8 @@ Almaz-linux-x86_64/
   bin/almaz-bin             the app built by `jolt build`
   lib/                      Almaz's native libraries, the BUI kit, and their
                             non-system dependencies (ONNX Runtime, …)
-  share/applications/almaz.desktop
+  share/applications/almaz.desktop   Exec=Almaz %F, with the image and RAW MIME
+                                     types, for the file manager's Open With
   share/doc/almaz/LICENSE
 ```
 

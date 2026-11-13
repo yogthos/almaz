@@ -13,7 +13,11 @@
             [almaz.cli :as cli]
             [almaz.ui.canvas :as canvas]
             [almaz.ui.chrome :as chrome]
+            [almaz.ui.drop :as drop]
+            [almaz.ui.export :as export]
+            [almaz.ui.shortcuts]          ; app-wide keyboard shortcuts
             [almaz.ui.sidebar :as sidebar]
+            [almaz.state :as s]
             [almaz.worker :as worker]))
 
 (defn app []
@@ -25,7 +29,7 @@
      [canvas/image-view]
      [chrome/status-bar]
      [chrome/filmstrip]]
-    [sidebar/sidebar]]])
+    (if @s/export-open* [export/panel sidebar/width] [sidebar/sidebar])]])
 
 (defn- dev-script!
   "ALMAZ_SCRIPT=file.clj: load a file a moment after startup, on its own
@@ -37,6 +41,9 @@
 
 (defn- open-app! [files]
   (worker/start!)
+  ;; dropped files and Open With (on macOS, files opened with the app arrive
+  ;; this way, not as arguments, and may come before the window is up)
+  (drop/install! act/open-images!)
   (dev-script!)
   (act/add-images! (if (seq files) files (filter #(.exists (java.io.File. %)) ["DSC_9852.NEF"])))
   (ui/run app :title "Almaz" :width 1500 :height 960))

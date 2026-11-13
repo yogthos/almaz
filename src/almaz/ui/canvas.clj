@@ -313,14 +313,13 @@
 (def ^:private ctrl "The kit's Ctrl bit, which macOS's Command sets too." 2)
 
 (defn on-key
-  "Space: pan while held. Cmd/Ctrl+Z undo, with Shift redo; R: the Repair
-   brush. (Keys reach the image pane under the pointer.)"
+  "Space: pan while held; R: the Repair brush. (Keys reach the image pane
+   under the pointer; the app-wide shortcuts are almaz.ui.shortcuts'.)"
   [k mods]
   (let [k (str k) mods (long (or mods 0))
-        cmd? (pos? (bit-and mods ctrl)) shift? (pos? (bit-and mods shift))]
+        cmd? (pos? (bit-and mods ctrl))]
     (cond
       (space? k) (reset! s/space* true)
-      (and cmd? (#{"z" "Z"} k)) (if shift? (act/redo!) (act/undo!))
       (and (not cmd?) (#{"r" "R"} k)) (act/repair-tool!))))
 (defn on-keyrelease [k _] (when (space? k) (reset! s/space* false)))
 

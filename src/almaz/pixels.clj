@@ -64,7 +64,9 @@
 (ffi/defcfn load-jpeg-mem*  "almz_load_jpeg_mem"  [:pointer :size_t :pointer] :pointer :blocking)
 (ffi/defcfn from-rgb8*      "almz_from_rgb8"      [:pointer :int32 :int32] :pointer :blocking)
 (ffi/defcfn save*           "almz_save"
-  [:pointer :pointer :int32 :pointer :int32 :int32 :pointer :int32 :int32 :pointer :pointer] :int32 :blocking)
+  [:pointer :pointer :int32 :pointer :int32 :int32 :pointer :int32 :int32 :int32 :int32 :pointer :pointer] :int32 :blocking)
+(ffi/defcfn save-estimate*  "almz_save_estimate"
+  [:pointer :pointer :int32 :pointer :int32 :int32 :int32 :int32 :int32 :int32 :pointer :pointer] :int64 :blocking)
 (ffi/defcfn meta-read*      "almz_meta_read"      [:pointer :pointer] :int32 :blocking)
 (ffi/defcfn free-string*    "almz_free_string"    [:pointer] :void)
 (ffi/defcfn abi*           "almz_abi"            [] :int32)
@@ -77,8 +79,9 @@
 
 ;; ---- layout check ------------------------------------------------------------
 (def abi
-  "The native struct layouts this namespace writes (ALMZ_ABI in almazimg.h)."
-  3)
+  "The native struct layouts and signatures this namespace uses (ALMZ_ABI in
+   almazimg.h)."
+  4)
 
 (defn abi-problem
   "Why the loaded libalmazimg can't be used with this code, or nil. A built
@@ -508,24 +511,35 @@
 
 (defn rgb8->image [p w h] (from-rgb8* p (int w) (int h)))
 
+(def profiles
+  "Export colour spaces (ALMZ_PROF_* in almazimg.h)."
+  {:none 0 :srgb 1 :p3 2 :adobe 3})
+
+(defn- save-args
+  "The writer's arguments after the layer array, in `arena`."
+  [a {:keys [quality compression profile xf size] fmt :format}]
+  [(if xf (doubles* a xf) ffi/null) (int (or (first size) 0)) (int (or (second size) 0))
+   (int (formats fmt)) (int (or quality 90)) (int (or compression -1)) (int (profiles (or profile :srgb)))])
+
 (defn save-image!
   "Write the full-resolution composite to `path` as `format` (see `formats`),
-   with `meta` (read-meta's map) embedded as EXIF. The file is written to
-   `path`.part and renamed when complete: a large export takes seconds, and
-   anything opening `path` meanwhile would read a truncated image. :xf and
-   :size [w h] give the output's geometry (output -> source pixels; default
-   the image as is)."
-  [base layers {:keys [path quality meta xf size] fmt :format}]
+   with `meta` (read-meta's map) embedded as EXIF. :quality is JPEG's 1..100,
+   :compression zlib's level for PNG or TIFF's codec (0 none, 1 LZW,
+   2 Deflate; default the format's), :profile the colour space (`profiles`,
+   default :srgb). The file is written to `path`.part and renamed when
+   complete: a large export takes seconds, and anything opening `path`
+   meanwhile would read a truncated image. :xf and :size [w h] give the
+   output's geometry (output -> source pixels; default the image as is)."
+  [base layers {:keys [path meta] :as opts}]
   (let [part (str path ".part")]
     (with-open [a (ffi/confined-arena)]
       (let [larr (write-layers a layers)
             cpath (ffi/string->ptr a part)
-            mp (if meta (write-meta-struct a meta) ffi/null)]
+            mp (if meta (write-meta-struct a meta) ffi/null)
+            [xf w h fmt q c prof] (save-args a opts)]
         (try
           (call-with-err (str "cannot write " path)
-                         #(save* base larr (int (count layers))
-                                 (if xf (doubles* a xf) ffi/null) (int (or (first size) 0)) (int (or (second size) 0))
-                                 cpath (int (formats fmt)) (int quality) mp %)
+                         #(save* base larr (int (count layers)) xf w h cpath fmt q c prof mp %)
                          zero?)
           (catch Exception e
             (let [f (java.io.File. part)] (when (.isFile f) (.delete f)))
@@ -533,6 +547,18 @@
     (when-not (.renameTo (java.io.File. part) (java.io.File. path))
       (throw (ex-info (str "cannot write " path) {:path path})))
     path))
+
+(defn estimate-size
+  "About how many bytes save-image! would write with `opts` (its options,
+   :path aside): a few bands of rows encoded and scaled up."
+  [base layers {:keys [meta] :as opts}]
+  (with-open [a (ffi/confined-arena)]
+    (let [larr (write-layers a layers)
+          mp (if meta (write-meta-struct a meta) ffi/null)
+          [xf w h fmt q c prof] (save-args a opts)]
+      (call-with-err "cannot estimate the export size"
+                     #(save-estimate* base larr (int (count layers)) xf w h fmt q c prof mp %)
+                     (complement neg?)))))
 
 ;; ---- repair ------------------------------------------------------------------
 (defn inpaint!
