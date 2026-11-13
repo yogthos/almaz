@@ -7,6 +7,8 @@
             [almaz.color :as c]
             [almaz.doc :as d]
             [almaz.engine :as eng]
+            [almaz.export :as ex]
+            [almaz.files :as files]
             [almaz.geom :as g]
             [almaz.history :as h]
             [almaz.lifecycle :as life]
@@ -16,12 +18,6 @@
             [almaz.view :as v]))
 
 ;; ---- images ----------------------------------------------------------------
-(def image-extensions #{"jpg" "jpeg" "png" "tif" "tiff"})
-
-(defn supported? [path]
-  (or (raw/raw-file? path)
-      (contains? image-extensions (str/lower-case (or (second (re-find #"\.([^./]+)$" path)) "")))))
-
 (defn select-doc!
   "Make doc `id` the one being edited. The previous one gives back its
    full-resolution pixels (they are re-decoded when it is selected again)."
@@ -41,7 +37,7 @@
   "Add image files to the filmstrip; the first one added opens when nothing is."
   [paths]
   (let [known (set (map :path (d/docs @s/db*)))
-        fresh (->> paths (filter supported?) (remove known) distinct)]
+        fresh (->> paths (filter files/supported?) (remove known) distinct)]
     (doseq [p fresh]
       (s/swap-db! d/add-doc {:path p :raw? (raw/raw-file? p)}))
     (when (and (nil? @s/current*) (seq (d/docs @s/db*)))
@@ -49,6 +45,22 @@
     (when (and (seq paths) (empty? fresh))
       (s/message! "No new supported images"))
     (s/wake!)))
+
+(defn open-images!
+  "Files the desktop handed over (dropped on the window, or opened with
+   Almaz): add the images among them, folders' too, and show the first."
+  [paths]
+  (let [imgs (files/expand paths)]
+    (if (empty? imgs)
+      (s/message! "Nothing to add: no supported images")
+      (let [known (set (map :path (d/docs @s/db*)))
+            fresh (remove known imgs)]
+        (when (seq fresh) (add-images! fresh))
+        (when-let [dc (first (filter #(= (first imgs) (:path %)) (d/docs @s/db*)))]
+          (select-doc! (:id dc)))
+        (s/message! (str "Added " (count fresh) " image" (when (not= 1 (count fresh)) "s")
+                         (when (< (count fresh) (count imgs))
+                           (str " (" (- (count imgs) (count fresh)) " already open)"))))))))
 
 (def ^:private open-filters
   [["Images" "*.nef *.nrw *.arw *.cr2 *.cr3 *.raf *.orf *.rw2 *.dng *.pef *.srw *.jpg *.jpeg *.png *.tif *.tiff"]
@@ -377,20 +389,41 @@
 
 (defn zoom-to! [scale] (swap! s/view* v/set-scale scale))
 
-;; ---- export ----------------------------------------------------------------
-(def export-formats
-  [["JPEG" :jpeg "jpg"] ["TIFF 16-bit" :tiff16 "tif"] ["PNG 16-bit" :png16 "png"] ["PNG 8-bit" :png8 "png"]])
+(defn zoom-by!
+  "Zoom about the pane centre by `factor` (a keyboard step)."
+  [factor]
+  (when (doc-size) (swap! s/view* v/zoom-at factor (/ (v/pane-width @s/view*) 2.0) (/ (:ch @s/view*) 2.0))))
 
-(defn export! [fmt-index quality]
+;; ---- export ----------------------------------------------------------------
+(defn open-export!
+  "Show the export panel (settings, size), for an image that has loaded."
+  []
+  (when (:base (s/current-doc))
+    (reset! s/export-open* true)
+    (s/wake!)))
+
+(defn close-export! [] (reset! s/export-open* false))
+
+(defn set-export!
+  "Change one export setting (almaz.export/defaults' keys)."
+  [k v]
+  (swap! s/export-settings* assoc k v)
+  (s/wake!))
+
+(defn export!
+  "Ask where to write the current image with the panel's settings, then queue
+   it for the worker."
+  []
   (when-let [dc (s/current-doc)]
-    (let [[label fmt ext] (nth export-formats fmt-index)
-          stem (str/replace (:name dc) #"\.[^.]+$" "")
+    (let [settings @s/export-settings*
+          ext (ex/ext settings)
           dir (str/replace (:path dc) #"/[^/]*$" "")]
-      (when-let [path (first (bk/file-dialog {:title (str "Export " label) :mode :save
-                                              :dir dir :file (str stem "-almaz." ext)
-                                              :filters [[label (str "*." ext)]]}))]
-        (let [path (if (str/ends-with? (str/lower-case path) (str "." ext)) path (str path "." ext))]
-          (reset! s/export-req* {:doc (:id dc) :path path :format fmt :quality quality})
+      (when-let [path (first (bk/file-dialog {:title (str "Export " (ex/label settings)) :mode :save
+                                              :dir dir :file (ex/file-name (:name dc) settings)
+                                              :filters [[(ex/label settings) (str "*." ext)]]}))]
+        (let [path (ex/with-ext path settings)]
+          (reset! s/export-req* {:doc (:id dc) :path path :opts (ex/save-opts settings)})
+          (close-export!)
           (s/message! (if (d/processed? @s/db* (:id dc))
                         (str "Exporting to " path)
                         "Export queued: finishing filters first"))

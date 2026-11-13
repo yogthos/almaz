@@ -88,8 +88,9 @@ void almz_histogram(const AlmzImg *base, const AlmzLayer *layers, int nlayers,
 void almz_histogram_draw(const uint32_t *hist, int w, int h, uint8_t *out, const uint8_t *bg);
 
 /* Bumped whenever a struct the caller fills (AlmzLayer, AlmzTone, AlmzMeta)
- * changes shape: a caller built against another layout must not run. */
-#define ALMZ_ABI 3
+ * or a function's arguments change shape: a caller built against another
+ * layout must not run. */
+#define ALMZ_ABI 4
 int almz_abi(void);
 
 /* -- images -------------------------------------------------------------- */
@@ -260,14 +261,28 @@ enum { ALMZ_FMT_PNG16 = 1, ALMZ_FMT_PNG8, ALMZ_FMT_JPEG, ALMZ_FMT_TIFF16 };
 AlmzImg *almz_load(const char *path, char **err);
 AlmzImg *almz_load_jpeg_mem(const uint8_t *data, size_t len, char **err);
 AlmzImg *almz_from_rgb8(const uint8_t *rgb, int w, int h);
+/* Colour spaces an export can be written in. The engine works in sRGB; the
+ * others are converted into and their ICC profile embedded. NONE writes
+ * sRGB values untagged. */
+enum { ALMZ_PROF_NONE = 0, ALMZ_PROF_SRGB, ALMZ_PROF_P3, ALMZ_PROF_ADOBE };
 /* Write the composite of base + layers at full resolution, streaming rows,
- * with `meta` (may be NULL) as EXIF. quality is JPEG quality 1..100. The
+ * with `meta` (may be NULL) as EXIF. quality is JPEG quality 1..100;
+ * compression is zlib's level 0..9 for PNG, and 0 none / 1 LZW / 2 Deflate
+ * for TIFF (< 0: the format's default); profile is an ALMZ_PROF_*. The
  * output is out_w x out_h; `xf` maps its pixel centres to source pixels
  * (orientation and crop; NULL with out_w/out_h 0: the image as is). 0 on
  * success. */
 int almz_save(const AlmzImg *base, const AlmzLayer *layers, int nlayers,
               const double *xf, int out_w, int out_h,
-              const char *path, int format, int quality, const AlmzMeta *meta, char **err);
+              const char *path, int format, int quality, int compression, int profile,
+              const AlmzMeta *meta, char **err);
+/* The size in bytes almz_save would write with the same arguments, from
+ * encoding a few bands of rows spread over the image (all of it when
+ * small). -1 on error. */
+long long almz_save_estimate(const AlmzImg *base, const AlmzLayer *layers, int nlayers,
+                             const double *xf, int out_w, int out_h,
+                             int format, int quality, int compression, int profile,
+                             const AlmzMeta *meta, char **err);
 void almz_free_string(char *s);
 
 #ifdef __cplusplus

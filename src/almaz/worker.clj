@@ -5,7 +5,7 @@
 
    Priorities: a pending export of the current image, then loading the
    current image, then (re)processing its first stale layer once edits have
-   settled, then redrawing its thumbnail when the picture changed without
+   settled, then the export panel's size estimate, then redrawing its thumbnail when the picture changed without
    processing (light adjustments), then filmstrip thumbnails for images not
    opened yet. A layer job is cancelled as soon as the layer's signature
    changes (an edit underneath it, or the layer itself), it is disabled, or
@@ -182,28 +182,50 @@
     (finally (swap! s/mask-req* #(if (= % req) nil %)))))
 
 ;; ---- export --------------------------------------------------------------------
+(defn- write-opts
+  "save-image!'s options for doc `dc`: `opts` plus the picture's metadata and
+   geometry (oriented and cropped)."
+  [opts dc]
+  (assoc opts :meta (d/exif @s/db* (:id dc))
+         :xf (g/display->source dc false) :size (g/display-size dc false)))
+
 (defn- export!
   "Write the doc's picture, oriented and cropped."
-  [{:keys [path quality] fmt :format} {:keys [id base name]}]
+  [{:keys [path opts]} {:keys [id base name]}]
   (reset! s/job* {:label (str "Exporting " name)})
   (let [ls (s/layers id)
         dc (s/doc id)]
     (life/using! (concat [base] (map :img ls) (map :mask ls)))
     (try
       (let [t0 (s/now)]
-        (px/save-image! base (eng/layer-refs dc ls)
-                        {:path path :format fmt :quality quality :meta (d/exif @s/db* id)
-                         :xf (g/display->source dc false) :size (g/display-size dc false)})
+        (px/save-image! base (eng/layer-refs dc ls) (assoc (write-opts opts dc) :path path))
         (s/message! (format "Exported %s (%.1fs)" path (/ (- (s/now) t0) 1000.0))))
       (finally
         (reset! s/export-req* nil)
         (life/released!)))))
+
+(defn- estimate!
+  "How big the export panel's settings would make the doc's file."
+  [k {:keys [id base]}]
+  (let [ls (s/layers id)
+        dc (s/doc id)]
+    (life/using! (concat [base] (map :img ls) (map :mask ls)))
+    (try
+      (let [n (px/estimate-size base (eng/layer-refs dc ls) (write-opts (second k) dc))]
+        (reset! s/estimate* {:key k :bytes n}))
+      (finally (life/released!)))))
 
 ;; ---- the loop ------------------------------------------------------------------
 (defn- export-task [cur]
   (let [req @s/export-req*]
     (when (and req (= (:doc req) (:id cur)) (= :ready (:status cur)) (d/processed? @s/db* (:id cur)))
       [:export req cur])))
+
+(defn- estimate-task [cur]
+  (when (and @s/export-open* (= :ready (:status cur)) (:base cur) (d/processed? @s/db* (:id cur)))
+    (let [k (s/estimate-key cur)]
+      (when (not= k (:key @s/estimate*))
+        [:estimate k cur]))))
 
 (defn- load-task [cur]
   (when (#{:pending :thumb} (:status cur)) [:load cur]))
@@ -233,12 +255,13 @@
   "The next job, by priority (see the namespace doc)."
   []
   (let [cur (s/current-doc)]
-    (or (when cur (or (export-task cur) (load-task cur) (mask-task cur) (process-task cur) (rethumb-task cur)))
+    (or (when cur (or (export-task cur) (load-task cur) (mask-task cur) (process-task cur) (estimate-task cur) (rethumb-task cur)))
         (thumb-task))))
 
 (defn- run-task! [[kind a b]]
   (case kind
     :export  (export! a b)
+    :estimate (estimate! a b)
     :mask    (mask! a b)
     :load    (load/load-doc! a)
     :process (process-layer! a b)
@@ -250,6 +273,7 @@
   (case kind
     (:load :thumb) (s/swap-doc! (:id doc-or-req) assoc :status :error :error (str (ex-message e)))
     :export (reset! s/export-req* nil)
+    :estimate (reset! s/estimate* {:key doc-or-req :bytes nil})  ; don't retry the same
     :mask (reset! s/mask-req* nil)
     nil))
 

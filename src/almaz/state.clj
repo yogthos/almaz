@@ -6,6 +6,7 @@
    and what the worker is doing."
   (:require [glimmer.ratom :as r]
             [almaz.doc :as d]
+            [almaz.export :as ex]
             [almaz.geom :as g])
   (:import (java.util.concurrent LinkedBlockingQueue TimeUnit)))
 
@@ -29,7 +30,10 @@
 (defonce cursor* (r/atom nil))    ; pointer over the canvas [x y], nil outside
 (defonce space* (r/atom false))   ; Space held over the canvas: drag pans
 (defonce mask-req* (r/atom nil))   ; {:doc :layer :sel} an automatic mask for the worker
-(defonce export-req* (atom nil))  ; {:doc :path :format :quality} for the worker
+(defonce export-req* (atom nil))  ; {:doc :path :opts} for the worker (opts: almaz.export/save-opts)
+(defonce export-open* (r/atom false))           ; the export panel is showing
+(defonce export-settings* (r/atom ex/defaults)) ; what it is set to (almaz.export)
+(defonce estimate* (r/atom nil))  ; {:key :bytes} the export size the worker last estimated
 
 ;; ---- worker wake-up ----------------------------------------------------------
 (defonce ^:private wake-q (LinkedBlockingQueue.))
@@ -56,6 +60,12 @@
   "The size the image pane shows the doc at (almaz.geom), once known."
   [doc]
   (when (:w doc) (g/display-size doc (editing-crop?))))
+
+(defn estimate-key
+  "What an export size estimate of `doc` depends on: the settings, the
+   output size, and the picture."
+  [doc]
+  [(:id doc) (ex/save-opts @export-settings*) (g/display-size doc false) (d/output-signature @db* (:id doc))])
 
 ;; ---- writing -----------------------------------------------------------------
 (defn swap-db!

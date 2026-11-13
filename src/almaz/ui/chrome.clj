@@ -8,12 +8,11 @@
             [almaz.strip :as strip]
             [almaz.loading :as load]
             [glimmer.ratom :as r]
+            [almaz.ui.shortcuts :as sc]
             [almaz.ui.units :refer [px]]
             [almaz.view :as v]))
 
 (def version "0.2.0")
-
-(defonce ^:private export-format (atom 0))
 
 (defn top-bar []
   (let [doc (s/current-doc)
@@ -31,14 +30,13 @@
      (let [_ @s/history* _ @s/current*]
        [:hbox {:weight 0 :spacing 2}
         [:button {:text "Undo" :icon "LOOP_BACK" :enabled (if (act/can-undo?) 1 0) :on-click act/undo!
-                  :description "Undo (Cmd+Z)"}]
+                  :description (str "Undo (" (sc/label :undo) ")")}]
         [:button {:text "Redo" :icon "LOOP_FORWARDS" :enabled (if (act/can-redo?) 1 0) :on-click act/redo!
-                  :description "Redo (Shift+Cmd+Z)"}]])
+                  :description (str "Redo (" (sc/label :redo) ")")}]])
      [:label {:text (str "v" version) :weight 0}]
-     [:dropdown {:items (mapv first act/export-formats) :weight 0 :value @export-format
-                 :on-change #(reset! export-format (long %))}]
-     [:button {:text "Export image" :weight 0 :enabled (if (:base doc) 1 0)
-               :on-click #(act/export! @export-format 95)}]]))
+     [:button {:text "Export…" :weight 0 :enabled (if (:base doc) 1 0)
+               :on-click #(if @s/export-open* (act/close-export!) (act/open-export!))
+               :description (str "Export the image (" (sc/label :export) ")")}]]))
 
 (def ^:private zoom-steps [["Fit" nil] ["25%" 0.25] ["50%" 0.5] ["100%" 1.0] ["200%" 2.0] ["400%" 4.0]])
 
@@ -65,7 +63,8 @@
         job @s/job*
         view @s/view*]
     [:hbox {:padding 4 :spacing 8}
-     [:button {:text "Add images" :weight 0 :on-click act/open-dialog!}]
+     [:button {:text "Add images" :weight 0 :on-click act/open-dialog!
+               :description (str "Add images (" (sc/label :open) ")")}]
      [:button {:text "Remove" :weight 0 :enabled (if doc 1 0)
                :on-click #(some-> @s/current* act/remove-doc!)}]
      [:label {:text @s/message* :weight 1}]

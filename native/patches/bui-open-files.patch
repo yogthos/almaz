@@ -1,0 +1,441 @@
+diff --git a/kit/include/BUI_kit.h b/kit/include/BUI_kit.h
+index c213953..4782ebd 100644
+--- a/kit/include/BUI_kit.h
++++ b/kit/include/BUI_kit.h
+@@ -684,6 +684,15 @@ void BK_window_set_stop_check(int (*stop)(void)); /* polled after each message *
+ int BK_window_wake_init(void (*cb)(void));
+ void BK_window_wake(void);
+ void BK_window_set_keep_alive(int on);
++/* Files handed to the app: dropped on a window (`win` that window, x, y the
++ * drop point in its raster pixels), or opened from the desktop (Finder's
++ * Open With / a file dropped on the Dock icon on macOS: `win` NULL, x = y =
++ * -1). `paths` are absolute, UTF-8, valid during the call. Called on the
++ * loop's thread; files that arrive before a handler is set are kept and
++ * handed to it when it is. NULL clears the handler. */
++typedef void (*BKOpenFilesFn)(void *data, BKWindow *win, const char *const *paths, int n, int x,
++                              int y);
++void BK_window_set_open_files(BKOpenFilesFn fn, void *data);
+ 
+ /* One of Blender's widgets drawn straight into a raster, outside any BKContext: the same
+  * drawing (interface_widgets.cc port, theme, Inter text) the kit's own nodes use. For
+diff --git a/kit/intern/kit_core.c b/kit/intern/kit_core.c
+index 5a8676c..4afa9ed 100644
+--- a/kit/intern/kit_core.c
++++ b/kit/intern/kit_core.c
+@@ -3768,3 +3768,116 @@ void bk_edit_next(BKNode *from, int dir)
+     next->cls->activate(next);
+   }
+ }
++
++/* -- files handed to the app (BK_window_set_open_files) ------------------------ */
++typedef struct BKFileBatch {
++  char **paths;
++  int n, x, y;
++  struct BKFileBatch *next;
++} BKFileBatch;
++
++static BKOpenFilesFn g_open_files = NULL;
++static void *g_open_files_data = NULL;
++static BKFileBatch *g_file_queue = NULL; /* waiting for a handler, oldest first */
++
++void bk_free_paths(char **paths, int n)
++{
++  for (int i = 0; i < n; i++) {
++    free(paths[i]);
++  }
++  free(paths);
++}
++
++void bk_open_files(BKWindow *win, const char *const *paths, int n, int x, int y)
++{
++  if (n <= 0) {
++    return;
++  }
++  if (g_open_files) {
++    g_open_files(g_open_files_data, win, paths, n, x, y);
++    return;
++  }
++  /* no handler yet (an app opened with files): keep them, without the window */
++  BKFileBatch *b = (BKFileBatch *)calloc(1, sizeof(BKFileBatch));
++  b->paths = (char **)malloc(sizeof(char *) * (size_t)n);
++  for (int i = 0; i < n; i++) {
++    b->paths[i] = strdup(paths[i]);
++  }
++  b->n = n;
++  b->x = b->y = -1;
++  BKFileBatch **tail = &g_file_queue;
++  while (*tail) {
++    tail = &(*tail)->next;
++  }
++  *tail = b;
++}
++
++void BK_window_set_open_files(BKOpenFilesFn fn, void *data)
++{
++  g_open_files = fn;
++  g_open_files_data = data;
++  while (fn && g_file_queue) {
++    BKFileBatch *b = g_file_queue;
++    g_file_queue = b->next;
++    fn(data, NULL, (const char *const *)b->paths, b->n, b->x, b->y);
++    bk_free_paths(b->paths, b->n);
++    free(b);
++  }
++}
++
++static int hex_digit(int c)
++{
++  if (c >= '0' && c <= '9') {
++    return c - '0';
++  }
++  c = tolower(c);
++  return c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
++}
++
++int bk_uri_list_paths(const char *text, size_t len, char ***r_paths)
++{
++  int n = 0, cap = 4;
++  char **out = (char **)malloc(sizeof(char *) * (size_t)cap);
++  size_t i = 0;
++  while (i < len) {
++    size_t e = i;
++    while (e < len && text[e] != '\n' && text[e] != '\r' && text[e] != '\0') {
++      e++;
++    }
++    const char *line = text + i;
++    const size_t ll = e - i;
++    /* RFC 2483: "#" lines are comments; only file: URIs name local files */
++    if (ll > 5 && line[0] != '#' && strncmp(line, "file:", 5) == 0) {
++      const char *p = line + 5, *end = line + ll;
++      if (end - p >= 2 && p[0] == '/' && p[1] == '/') { /* file://host/path */
++        p += 2;
++        while (p < end && *p != '/') {
++          p++;
++        }
++      }
++      if (p < end && *p == '/') {
++        char *path = (char *)malloc((size_t)(end - p) + 1);
++        size_t k = 0;
++        for (; p < end; p++) {
++          int hi, lo;
++          if (*p == '%' && end - p >= 3 && (hi = hex_digit(p[1])) >= 0 && (lo = hex_digit(p[2])) >= 0) {
++            path[k++] = (char)(hi * 16 + lo);
++            p += 2;
++          }
++          else {
++            path[k++] = *p;
++          }
++        }
++        path[k] = 0;
++        if (n == cap) {
++          cap *= 2;
++          out = (char **)realloc(out, sizeof(char *) * (size_t)cap);
++        }
++        out[n++] = path;
++      }
++    }
++    i = e + 1;
++  }
++  *r_paths = out;
++  return n;
++}
+diff --git a/kit/intern/kit_intern.h b/kit/intern/kit_intern.h
+index 8bf90a7..030a91f 100644
+--- a/kit/intern/kit_intern.h
++++ b/kit/intern/kit_intern.h
+@@ -651,3 +651,9 @@ void bk_textarea_html_draw(BKNode *n);
+ int bk_iround(float v);
+ bool bk_streq(const char *a, const char *b);
+ bool bk_keysym_is(const char *keysym, const char *name); /* case-insensitive */
++/* Files for BK_window_set_open_files's handler (window backends). */
++void bk_open_files(BKWindow *win, const char *const *paths, int n, int x, int y);
++/* The local paths of a text/uri-list (file:// URIs, percent-decoded); the
++ * count, *r_paths malloc'd (bk_free_paths). */
++int bk_uri_list_paths(const char *text, size_t len, char ***r_paths);
++void bk_free_paths(char **paths, int n);
+diff --git a/kit/intern/kit_window_cocoa.m b/kit/intern/kit_window_cocoa.m
+index 32cdd29..0f77c32 100644
+--- a/kit/intern/kit_window_cocoa.m
++++ b/kit/intern/kit_window_cocoa.m
+@@ -276,8 +276,50 @@ static CGColorSpaceRef srgb(void)
+   return cs;
+ }
+ 
++/* File URLs on a pasteboard (a drag), as paths for bk_open_files. */
++static NSArray *file_urls(NSPasteboard *pb)
++{
++  NSDictionary *opts = @{NSPasteboardURLReadingFileURLsOnlyKey : @YES};
++  return [pb readObjectsForClasses:@[ [NSURL class] ] options:opts];
++}
++
++static void open_urls(BKWindow *win, NSArray *urls, int x, int y)
++{
++  const char **paths = (const char **)malloc(sizeof(char *) * ([urls count] + 1));
++  int n = 0;
++  for (NSURL *url in urls) {
++    if ([url isFileURL] && [url fileSystemRepresentation]) {
++      paths[n++] = [url fileSystemRepresentation]; /* autoreleased: valid for the call */
++    }
++  }
++  bk_open_files(win, paths, n, x, y);
++  free(paths);
++}
++
+ @implementation BUIKitView
+ 
++/* Files dragged in from Finder (NSDraggingDestination). */
++- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender
++{
++  return [file_urls([sender draggingPasteboard]) count] ? NSDragOperationCopy : NSDragOperationNone;
++}
++
++- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender
++{
++  return [self draggingEntered:sender];
++}
++
++- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender
++{
++  NSArray *urls = file_urls([sender draggingPasteboard]);
++  if (![urls count] || !bk) {
++    return NO;
++  }
++  const NSPoint p = [self convertPoint:[sender draggingLocation] fromView:nil];
++  open_urls(bk, urls, (int)floor(p.x * bk->px), (int)floor(p.y * bk->px));
++  return YES;
++}
++
+ - (void)dealloc
+ {
+   [tracking release];
+@@ -689,6 +731,13 @@ static CGColorSpaceRef srgb(void)
+   return YES;
+ }
+ 
++/* Finder's Open With, a file dropped on the Dock icon, `open -a`: at launch
++ * too, before the app has a handler (bk_open_files keeps them). */
++- (void)application:(NSApplication *)app openURLs:(NSArray<NSURL *> *)urls
++{
++  open_urls(NULL, urls, -1, -1);
++}
++
+ @end
+ 
+ /* -- NSApplication (GHOST_SystemCocoa::init) ------------------------------------------ */
+@@ -1373,6 +1422,7 @@ BKWindow *BK_window_new(BKContext *ctx, const char *title, int width, int height
+     [nw makeFirstResponder:view];
+     [view release]; /* the window keeps it */
+     win->view = view;
++    [view registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
+     BUIKitWindowDelegate *delegate = [[BUIKitWindowDelegate alloc] init];
+     delegate->bk = win;
+     [nw setDelegate:delegate];
+diff --git a/kit/intern/kit_window_x11.c b/kit/intern/kit_window_x11.c
+index e045dc3..f987c16 100644
+--- a/kit/intern/kit_window_x11.c
++++ b/kit/intern/kit_window_x11.c
+@@ -84,6 +84,7 @@
+   F(XSetWMNormalHints) \
+   F(XSetWMProtocols) \
+   F(XStoreName) \
++  F(XTranslateCoordinates) \
+   F(XWarpPointer)
+ 
+ #  define BK_X11_DECL(f) static __typeof__(&f) p_##f;
+@@ -157,6 +158,7 @@ static int x11_load(void)
+ #  define XSetWMNormalHints (*p_XSetWMNormalHints)
+ #  define XSetWMProtocols (*p_XSetWMProtocols)
+ #  define XStoreName (*p_XStoreName)
++#  define XTranslateCoordinates (*p_XTranslateCoordinates)
+ #  define XWarpPointer (*p_XWarpPointer)
+ 
+ #  define MAX_TIMERS 64
+@@ -181,11 +183,19 @@ struct BKWindow {
+   int w, h;
+   Timer timers[MAX_TIMERS];
+   Cursor cursors[12];
++  /* the XDND drag over the window: its source, whether it offers files, the
++   * protocol version it speaks and the last position (window pixels) */
++  Window dnd_source;
++  int dnd_files, dnd_version, dnd_x, dnd_y;
+   struct BKWindow *next;
+ };
+ 
+ static Display *g_dpy = NULL;
+ static Atom a_delete, a_clipboard, a_utf8, a_targets, a_bui_sel;
++/* XDND (freedesktop.org drag and drop, version 5) */
++static Atom a_xdnd_aware, a_xdnd_enter, a_xdnd_position, a_xdnd_status, a_xdnd_leave,
++    a_xdnd_drop, a_xdnd_finished, a_xdnd_selection, a_xdnd_type_list, a_xdnd_copy, a_uri_list;
++enum { XDND_VERSION = 5 };
+ static BKWindow *g_windows = NULL;
+ static int g_open = 0, g_quit = 0, g_keep_alive = 0;
+ static int (*g_stop)(void) = NULL;
+@@ -218,6 +228,17 @@ static int open_display(void)
+   a_utf8 = XInternAtom(g_dpy, "UTF8_STRING", False);
+   a_targets = XInternAtom(g_dpy, "TARGETS", False);
+   a_bui_sel = XInternAtom(g_dpy, "BUI_SELECTION", False);
++  a_xdnd_aware = XInternAtom(g_dpy, "XdndAware", False);
++  a_xdnd_enter = XInternAtom(g_dpy, "XdndEnter", False);
++  a_xdnd_position = XInternAtom(g_dpy, "XdndPosition", False);
++  a_xdnd_status = XInternAtom(g_dpy, "XdndStatus", False);
++  a_xdnd_leave = XInternAtom(g_dpy, "XdndLeave", False);
++  a_xdnd_drop = XInternAtom(g_dpy, "XdndDrop", False);
++  a_xdnd_finished = XInternAtom(g_dpy, "XdndFinished", False);
++  a_xdnd_selection = XInternAtom(g_dpy, "XdndSelection", False);
++  a_xdnd_type_list = XInternAtom(g_dpy, "XdndTypeList", False);
++  a_xdnd_copy = XInternAtom(g_dpy, "XdndActionCopy", False);
++  a_uri_list = XInternAtom(g_dpy, "text/uri-list", False);
+   return 1;
+ }
+ 
+@@ -537,6 +558,114 @@ static void close_window(BKWindow *win)
+   g_open--;
+ }
+ 
++/* -- XDND: files dragged in from a file manager ---------------------------------- */
++static void xdnd_send(BKWindow *win, Atom type, long l1, long l2, long l3, long l4)
++{
++  XEvent m;
++  memset(&m, 0, sizeof(m));
++  m.xclient.type = ClientMessage;
++  m.xclient.display = g_dpy;
++  m.xclient.window = win->dnd_source;
++  m.xclient.message_type = type;
++  m.xclient.format = 32;
++  m.xclient.data.l[0] = (long)win->xid;
++  m.xclient.data.l[1] = l1;
++  m.xclient.data.l[2] = l2;
++  m.xclient.data.l[3] = l3;
++  m.xclient.data.l[4] = l4;
++  XSendEvent(g_dpy, win->dnd_source, False, NoEventMask, &m);
++  XFlush(g_dpy);
++}
++
++/* Does the drag offer text/uri-list? (In the message, or, with more than
++ * three types, in the source's XdndTypeList.) */
++static int xdnd_offers_files(const XClientMessageEvent *e)
++{
++  if (e->data.l[1] & 1) {
++    Atom type;
++    int format;
++    unsigned long n = 0, after;
++    unsigned char *prop = NULL;
++    int found = 0;
++    if (XGetWindowProperty(g_dpy, (Window)e->data.l[0], a_xdnd_type_list, 0, 1024, False, XA_ATOM,
++                           &type, &format, &n, &after, &prop) == Success && prop)
++    {
++      for (unsigned long i = 0; i < n; i++) {
++        found |= ((Atom *)prop)[i] == a_uri_list;
++      }
++      XFree(prop);
++    }
++    return found;
++  }
++  return (Atom)e->data.l[2] == a_uri_list || (Atom)e->data.l[3] == a_uri_list ||
++         (Atom)e->data.l[4] == a_uri_list;
++}
++
++static void xdnd_message(BKWindow *win, const XClientMessageEvent *e)
++{
++  const Atom t = e->message_type;
++  if (t == a_xdnd_enter) {
++    win->dnd_source = (Window)e->data.l[0];
++    win->dnd_version = (int)((unsigned long)e->data.l[1] >> 24);
++    win->dnd_files = win->dnd_version <= XDND_VERSION && xdnd_offers_files(e);
++  }
++  else if (t == a_xdnd_position) {
++    if ((Window)e->data.l[0] != win->dnd_source) {
++      return;
++    }
++    const int rx = (int)((unsigned long)e->data.l[2] >> 16), ry = (int)(e->data.l[2] & 0xffff);
++    Window child;
++    XTranslateCoordinates(g_dpy, RootWindow(g_dpy, DefaultScreen(g_dpy)), win->xid, rx, ry,
++                          &win->dnd_x, &win->dnd_y, &child);
++    /* accept (bit 0) and keep sending positions (empty rectangle) */
++    xdnd_send(win, a_xdnd_status, win->dnd_files ? 1 : 0, 0, 0, win->dnd_files ? (long)a_xdnd_copy : None);
++  }
++  else if (t == a_xdnd_leave) {
++    win->dnd_source = None;
++    win->dnd_files = 0;
++  }
++  else if (t == a_xdnd_drop) {
++    if ((Window)e->data.l[0] != win->dnd_source) {
++      return;
++    }
++    if (win->dnd_files) { /* the paths arrive as XdndSelection's SelectionNotify */
++      const Time when = win->dnd_version >= 1 ? (Time)e->data.l[2] : CurrentTime;
++      XConvertSelection(g_dpy, a_xdnd_selection, a_uri_list, a_xdnd_selection, win->xid, when);
++      XFlush(g_dpy);
++    }
++    else {
++      xdnd_send(win, a_xdnd_finished, 0, None, 0, 0);
++      win->dnd_source = None;
++    }
++  }
++}
++
++static void xdnd_selection(BKWindow *win, const XSelectionEvent *e)
++{
++  int ok = 0;
++  if (e->property != None) {
++    Atom type;
++    int format;
++    unsigned long n = 0, after;
++    unsigned char *prop = NULL;
++    if (XGetWindowProperty(g_dpy, win->xid, e->property, 0, 1 << 24, True, AnyPropertyType, &type,
++                           &format, &n, &after, &prop) == Success && prop)
++    {
++      char **paths = NULL;
++      const int count = bk_uri_list_paths((const char *)prop, n, &paths);
++      bk_open_files(win, (const char *const *)paths, count, win->dnd_x, win->dnd_y);
++      bk_free_paths(paths, count);
++      ok = count > 0;
++      XFree(prop);
++    }
++  }
++  if (win->dnd_source != None) {
++    xdnd_send(win, a_xdnd_finished, ok, ok ? (long)a_xdnd_copy : None, 0, 0);
++  }
++  win->dnd_source = None;
++  win->dnd_files = 0;
++}
++
+ static void handle_event(XEvent *ev)
+ {
+   if (ev->type == SelectionRequest) { /* someone pastes what we copied */
+@@ -636,12 +765,22 @@ static void handle_event(XEvent *ev)
+       handle_key(win, &ev->xkey, ev->type == KeyPress);
+       break;
+     case ClientMessage:
+-      if ((Atom)ev->xclient.data.l[0] == a_delete) {
++      if (ev->xclient.message_type == a_xdnd_enter || ev->xclient.message_type == a_xdnd_position ||
++          ev->xclient.message_type == a_xdnd_leave || ev->xclient.message_type == a_xdnd_drop)
++      {
++        xdnd_message(win, &ev->xclient);
++      }
++      else if ((Atom)ev->xclient.data.l[0] == a_delete) {
+         if (!win->cb.on_close || win->cb.on_close(win->cb.data, win)) {
+           close_window(win);
+         }
+       }
+       break;
++    case SelectionNotify:
++      if (ev->xselection.selection == a_xdnd_selection) {
++        xdnd_selection(win, &ev->xselection);
++      }
++      break;
+   }
+ }
+ 
+@@ -677,6 +816,11 @@ BKWindow *BK_window_new(BKContext *ctx, const char *title, int width, int height
+     return NULL;
+   }
+   XSetWMProtocols(g_dpy, win->xid, &a_delete, 1);
++  {
++    const Atom version = XDND_VERSION; /* we take drops (XDND) */
++    XChangeProperty(g_dpy, win->xid, a_xdnd_aware, XA_ATOM, 32, PropModeReplace,
++                    (const unsigned char *)&version, 1);
++  }
+   win->gc = XCreateGC(g_dpy, win->xid, 0, NULL);
+   BK_window_set_title(win, title);
+   win->next = g_windows;

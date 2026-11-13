@@ -5,10 +5,10 @@
   (:require [clojure.test :as t]))
 
 (def pure '[almaz.lens-test almaz.tile-test almaz.view-test almaz.strip-test almaz.doc-test almaz.autopilot-test almaz.geom-test almaz.color-test almaz.history-test
-            almaz.ep-test])
+            almaz.ep-test almaz.export-test almaz.keys-test almaz.files-test])
 
 (def native '[almaz.segment-test almaz.download-test almaz.pixels-test almaz.raw-test almaz.ort-test almaz.coreml-test
-              almaz.engine-test almaz.cli-test almaz.worker-test])
+              almaz.engine-test almaz.cli-test almaz.worker-test almaz.drop-test])
 
 (defmethod t/report :error [m]
   (t/with-test-out
