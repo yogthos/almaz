@@ -34,8 +34,6 @@
 
 (defn translate [dx dy] [1.0 0.0 (double dx) 0.0 1.0 (double dy)])
 
-(defn scale-xf [s] [(double s) 0.0 0.0 0.0 (double s) 0.0])
-
 (defn xf-rect
   "The bounding rect of `rect` mapped through `xf`."
   [xf [x y w h]]
@@ -103,8 +101,6 @@
   (let [[x y w h] (shown-rect doc editing?)]
     (compose (translate x y) (invert (orient-xf (or (:orient doc) 0) w h)))))
 
-(defn source->display [doc editing?] (invert (display->source doc editing?)))
-
 (defn display-crop
   "The crop as the crop editor shows it: in oriented whole-image coordinates."
   [doc]
@@ -153,29 +149,45 @@
         b (if (= 1 mb) (clamp (+ y h dy) (+ t min-crop) bh) (+ y h))]
     [l t (- r l) (- b t)]))
 
+;; One axis of a locked-aspect drag, by which side moves: s = 1 the far
+;; side (right/bottom), -1 the near one, 0 neither (it grows about the centre).
+(defn- side-sign [near far] (cond (= 1 far) 1 (= 1 near) -1 :else 0))
+
+(defn- anchor
+  "The axis's fixed point: the side that stays, or the centre."
+  [s start len]
+  (case s 1 start -1 (+ start len) (+ start (/ len 2.0))))
+
+(defn- room
+  "How long the axis can get about anchor `a` within [0, bound]."
+  [s a bound]
+  (case s 1 (- bound a) -1 a (* 2 (min a (- bound a)))))
+
+(defn- start-from
+  "Where the axis starts, `len` long about anchor `a`."
+  [s a len]
+  (case s 1 a -1 (- a len) (- a (/ len 2.0))))
+
+(defn- locked-size
+  "The dragged size [w h] at aspect `a`: an edge sets its own dimension, a
+   corner whichever gives the larger crop."
+  [[sx sy] [w1 h1] a]
+  (cond (zero? sy) [w1 (/ w1 a)]
+        (zero? sx) [(* h1 a) h1]
+        (>= (/ w1 a) h1) [w1 (/ w1 a)]
+        :else [(* h1 a) h1]))
+
 (defn- drag-locked
   "Resize keeping aspect `a`: corners pivot on the opposite corner, edges on
    the opposite edge's centre; the result is shrunk to stay inside bounds."
   [[x y w h] handle [dx dy] [bw bh] a]
   (let [[ml mt mr mb] (moves handle)
-        sx (cond (= 1 mr) 1 (= 1 ml) -1 :else 0)
-        sy (cond (= 1 mb) 1 (= 1 mt) -1 :else 0)
-        w1 (max min-crop (+ w (* sx dx)))
-        h1 (max min-crop (+ h (* sy dy)))
-        [w1 h1] (cond (zero? sy) [w1 (/ w1 a)]
-                      (zero? sx) [(* h1 a) h1]
-                      (>= (/ w1 a) h1) [w1 (/ w1 a)]
-                      :else [(* h1 a) h1])
-        ;; the anchor (fixed point) and the room around it
-        ax (case sx 1 x -1 (+ x w) (+ x (/ w 2.0)))
-        ay (case sy 1 y -1 (+ y h) (+ y (/ h 2.0)))
-        room-w (case sx 1 (- bw ax) -1 ax (* 2 (min ax (- bw ax))))
-        room-h (case sy 1 (- bh ay) -1 ay (* 2 (min ay (- bh ay))))
-        k (min 1.0 (/ room-w w1) (/ room-h h1))
+        sx (side-sign ml mr) sy (side-sign mt mb)
+        [w1 h1] (locked-size [sx sy] [(max min-crop (+ w (* sx dx))) (max min-crop (+ h (* sy dy)))] a)
+        ax (anchor sx x w) ay (anchor sy y h)
+        k (min 1.0 (/ (room sx ax bw) w1) (/ (room sy ay bh) h1))
         w1 (* k w1) h1 (* k h1)]
-    [(case sx 1 ax -1 (- ax w1) (- ax (/ w1 2.0)))
-     (case sy 1 ay -1 (- ay h1) (- ay (/ h1 2.0)))
-     w1 h1]))
+    [(start-from sx ax w1) (start-from sy ay h1) w1 h1]))
 
 (defn drag-crop
   "The crop `rect` after dragging `handle` (:move, :n, :ne, ... :nw) by
@@ -186,18 +198,29 @@
     a (drag-locked rect handle [dx dy] bounds a)
     :else (drag-free rect handle [dx dy] bounds)))
 
+(defn- near-edges
+  "Which of the rect's edges p is within `tol` of (:l :r :t :b), and whether
+   it's within the rect's span on each axis (:in-x :in-y)."
+  [[x y w h] [px py] tol]
+  (let [near (fn [a b] (<= (Math/abs (- (double a) (double b))) tol))
+        within (fn [v lo hi] (<= (- lo tol) v (+ hi tol)))]
+    (cond-> #{}
+      (near px x) (conj :l) (near px (+ x w)) (conj :r)
+      (near py y) (conj :t) (near py (+ y h)) (conj :b)
+      (within px x (+ x w)) (conj :in-x) (within py y (+ y h)) (conj :in-y))))
+
+(def ^:private handle-rules
+  "Corners first, then edges: [edges needed, handle]."
+  [[[:t :l] :nw] [[:t :r] :ne] [[:b :l] :sw] [[:b :r] :se]
+   [[:t :in-x] :n] [[:b :in-x] :s] [[:l :in-y] :w] [[:r :in-y] :e]])
+
 (defn handle-at
   "The crop handle at point p (display coords) within `tol`: a corner, an
    edge, :move inside, or nil outside."
-  [[x y w h] [px py] tol]
-  (let [near (fn [a b] (<= (Math/abs (- (double a) (double b))) tol))
-        within (fn [v lo hi] (<= (- lo tol) v (+ hi tol)))
-        l (near px x) r (near px (+ x w)) t (near py y) b (near py (+ y h))
-        in-x (within px x (+ x w)) in-y (within py y (+ y h))]
-    (cond
-      (and t l) :nw (and t r) :ne (and b l) :sw (and b r) :se
-      (and t in-x) :n (and b in-x) :s (and l in-y) :w (and r in-y) :e
-      (and (< x px (+ x w)) (< y py (+ y h))) :move)))
+  [[x y w h :as rect] [px py] tol]
+  (let [flags (near-edges rect [px py] tol)]
+    (or (some (fn [[need handle]] (when (every? flags need) handle)) handle-rules)
+        (when (and (< x px (+ x w)) (< y py (+ y h))) :move))))
 
 ;; ---- constraints ----------------------------------------------------------------
 (def constraints

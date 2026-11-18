@@ -76,6 +76,15 @@
 (defn- in-gamut? [[r g b]]
   (and (<= -1e-6 r 1.000001) (<= -1e-6 g 1.000001) (<= -1e-6 b 1.000001)))
 
+(defn- fit-chroma
+  "The largest chroma up to C at which (at chroma) is in gamut (bisection)."
+  [at C]
+  (loop [lo 0.0 hi C i 0]
+    (if (= i 14)
+      lo
+      (let [mid (* 0.5 (+ lo hi))]
+        (if (in-gamut? (at mid)) (recur mid hi (inc i)) (recur lo mid (inc i)))))))
+
 (defn lch->lin
   "Oklab LCh -> linear sRGB, losing chroma (at constant L and h) until the
    colour fits."
@@ -84,13 +93,7 @@
         ca (Math/cos h) sa (Math/sin h)
         at (fn [c] (oklab->lin [L (* c ca) (* c sa)]))
         rgb (at C)
-        [r g b] (if (in-gamut? rgb)
-                  rgb
-                  (loop [lo 0.0 hi C i 0]
-                    (if (= i 14)
-                      (at lo)
-                      (let [mid (* 0.5 (+ lo hi))]
-                        (if (in-gamut? (at mid)) (recur mid hi (inc i)) (recur lo mid (inc i)))))))]
+        [r g b] (if (in-gamut? rgb) rgb (at (fit-chroma at C)))]
     [(clamp01 r) (clamp01 g) (clamp01 b)]))
 
 (defn oklab->srgb [lab]
@@ -342,29 +345,47 @@
                                         (/ (Math/round (* 1e4 (double y))) 1e4)))
                        pts))))
 
+(defn- limit-tangents
+  "Fritsch-Carlson's limit on the tangents either side of segment i (slope
+   di), in the transient `m`: no overshoot, no reversal."
+  [m i di]
+  (if (zero? di)
+    (-> m (assoc! i 0.0) (assoc! (inc i) 0.0))
+    (let [a (/ (m i) di) b (/ (m (inc i)) di) h (+ (* a a) (* b b))]
+      (cond (or (neg? a) (neg? b)) (-> m (assoc! i (if (neg? a) 0.0 (m i)))
+                                       (assoc! (inc i) (if (neg? b) 0.0 (m (inc i)))))
+            (> h 9.0) (let [t (/ 3.0 (Math/sqrt h))]
+                        (-> m (assoc! i (* t a di)) (assoc! (inc i) (* t b di))))
+            :else m))))
+
 (defn- tangents
   "Fritsch-Carlson tangents: a cubic Hermite through the points that never
    overshoots them (darktable curve_tools' monotone hermite)."
   [xs ys]
   (let [n (count xs)
         d (mapv (fn [i] (/ (- (ys (inc i)) (ys i)) (- (xs (inc i)) (xs i)))) (range (dec n)))
-        m (transient (vec (for [i (range n)]
-                            (cond (zero? i) (d 0)
-                                  (= i (dec n)) (d (- n 2))
-                                  (pos? (* (d (dec i)) (d i))) (/ (+ (d (dec i)) (d i)) 2.0)
-                                  :else 0.0))))]
-    (persistent!
-     (reduce (fn [m i]
-               (let [di (d i)]
-                 (if (zero? di)
-                   (-> m (assoc! i 0.0) (assoc! (inc i) 0.0))
-                   (let [a (/ (m i) di) b (/ (m (inc i)) di) h (+ (* a a) (* b b))]
-                     (cond (or (neg? a) (neg? b)) (-> m (assoc! i (if (neg? a) 0.0 (m i)))
-                                                      (assoc! (inc i) (if (neg? b) 0.0 (m (inc i)))))
-                           (> h 9.0) (let [t (/ 3.0 (Math/sqrt h))]
-                                       (-> m (assoc! i (* t a di)) (assoc! (inc i) (* t b di))))
-                           :else m)))))
-             m (range (dec n))))))
+        m (vec (for [i (range n)]
+                 (cond (zero? i) (d 0)
+                       (= i (dec n)) (d (- n 2))
+                       (pos? (* (d (dec i)) (d i))) (/ (+ (d (dec i)) (d i)) 2.0)
+                       :else 0.0)))]
+    (persistent! (reduce (fn [m i] (limit-tangents m i (d i))) (transient m) (range (dec n))))))
+
+(defn- segment-at
+  "The index of the segment of `xs` holding x (inside the end points)."
+  [xs x]
+  (let [last-i (- (count xs) 2)]
+    (loop [i 0] (if (and (< i last-i) (>= x (xs (inc i)))) (recur (inc i)) i))))
+
+(defn- hermite
+  "The cubic Hermite through points i and i+1 (tangents m) at x, in 0..1."
+  [{:keys [xs ys m]} i x]
+  (let [h (- (xs (inc i)) (xs i))
+        t (/ (- x (xs i)) h) t2 (* t t) t3 (* t2 t)]
+    (clamp01 (+ (* (+ (* 2 t3) (* -3 t2) 1) (ys i))
+                (* (+ t3 (* -2 t2) t) h (m i))
+                (* (+ (* -2 t3) (* 3 t2)) (ys (inc i)))
+                (* (- t3 t2) h (m (inc i)))))))
 
 (defn curve-fn
   "The curve through `pts` (sorted by x) as a function of 0..1, flat past
@@ -377,13 +398,7 @@
       (cond
         (<= x x0) (ys 0)
         (>= x xn) (ys (dec n))
-        :else (let [i (loop [i 0] (if (and (< i (- n 2)) (>= x (xs (inc i)))) (recur (inc i)) i))
-                    h (- (xs (inc i)) (xs i))
-                    t (/ (- x (xs i)) h) t2 (* t t) t3 (* t2 t)]
-                (clamp01 (+ (* (+ (* 2 t3) (* -3 t2) 1) (ys i))
-                            (* (+ t3 (* -2 t2) t) h (m i))
-                            (* (+ (* -2 t3) (* 3 t2)) (ys (inc i)))
-                            (* (- t3 t2) h (m (inc i))))))))))
+        :else (hermite {:xs xs :ys ys :m m} (segment-at xs x) x)))))
 
 (def ^:private min-gap "Closest two points may get in x." 0.01)
 
@@ -494,22 +509,25 @@
 
 (def ^:private build-threads 8)
 
+(defn- fill-slice!
+  "Blue slice bi of the n^3 cube `a`: f at every red/green grid point."
+  [a f n bi]
+  (let [s (/ 1.0 (dec n))]
+    (dotimes [gi n]
+      (dotimes [ri n]
+        (let [[x y z] (f [(* ri s) (* gi s) (* bi s)])
+              i (* 3 (+ ri (* n (+ gi (* n bi)))))]
+          (aset a i (float x))
+          (aset a (+ i 1) (float y))
+          (aset a (+ i 2) (float z)))))))
+
 (defn- build-cube
   "f tabulated on an n^3 grid, the blue slices shared out over threads."
   [f n]
   (let [a (float-array (* 3 n n n))
-        s (/ 1.0 (dec n))
-        slices (fn [b0 b1]
-                 (doseq [bi (range b0 b1)]
-                   (dotimes [gi n]
-                     (dotimes [ri n]
-                       (let [[x y z] (f [(* ri s) (* gi s) (* bi s)])
-                             i (* 3 (+ ri (* n (+ gi (* n bi)))))]
-                         (aset a i (float x))
-                         (aset a (+ i 1) (float y))
-                         (aset a (+ i 2) (float z)))))))
         step (long (Math/ceil (/ n (double build-threads))))]
-    (run! deref (mapv (fn [b0] (future (slices b0 (min n (+ b0 step))))) (range 0 n step)))
+    (run! deref (mapv (fn [b0] (future (doseq [bi (range b0 (min n (+ b0 step)))] (fill-slice! a f n bi))))
+                      (range 0 n step)))
     a))
 
 (defn- build-curves
@@ -540,18 +558,28 @@
   [kind p]
   (get (:tables @cache) (table-key kind p) ::none))
 
+(defn- remember [{:keys [order tables]} key t]
+  (let [order (conj order key)
+        [drop keep] (split-at (max 0 (- (count order) cache-size)) order)]
+    {:order (vec keep) :tables (apply dissoc (assoc tables key t) drop)}))
+
+;; One build at a time: a build already spreads over build-threads, so the UI's
+;; builder, thumbnails and exports building at once only fight for the cores,
+;; and asking twice for the same settings would build them twice.
+(defonce ^:private build-lock (Object.))
+
 (defn table
   "What the engine draws kind `kind` with: {:cube {:n :data}} or {:curves},
    or nil when the settings change nothing. Cached by settings (slider drags
    revisit them, and every render asks)."
   [kind p]
   (let [key (table-key kind p)
-        {:keys [tables]} @cache]
-    (if (contains? tables key)
-      (tables key)
-      (let [t (build-table kind (second key))]
-        (swap! cache (fn [{:keys [order tables]}]
-                       (let [order (conj order key)
-                             [drop keep] (split-at (max 0 (- (count order) cache-size)) order)]
-                         {:order (vec keep) :tables (apply dissoc (assoc tables key t) drop)})))
-        t))))
+        hit #(find (:tables @cache) key)]
+    (if-let [[_ t] (hit)]
+      t
+      (locking build-lock
+        (if-let [[_ t] (hit)]
+          t
+          (let [t (build-table kind (second key))]
+            (swap! cache remember key t)
+            t))))))

@@ -7,6 +7,7 @@
    then thin wrappers that marshal Clojure values: a layer stack is a seq of
    {:img :mask :opacity :enabled} maps, written into a C AlmzLayer array.
    Long calls are :blocking so a worker thread in C doesn't pin the GC."
+  (:refer-clojure :exclude [floats ints])
   (:require [jolt.ffi :as ffi]))
 
 ;; ---- bindings ----------------------------------------------------------------
@@ -113,11 +114,16 @@
 
 (defn- non-null? [p] (and p (not (ffi/null? p))))
 
+(defn- allocated
+  "`p`, a native image or mask just made; NULL means the engine was out of memory."
+  [what p]
+  (if (non-null? p) p (throw (ex-info (str what ": out of memory") {:what what}))))
+
 ;; ---- images ------------------------------------------------------------------
-(defn new-image [w h] (img-new* (int w) (int h)))
+(defn new-image [w h] (allocated "new image" (img-new* (int w) (int h))))
 (defn wrap-image
   "Adopt a malloc'd w*h*3 uint16 buffer as an image (takes ownership)."
-  [w h data] (img-wrap* (int w) (int h) data))
+  [w h data] (allocated "image" (img-wrap* (int w) (int h) data)))
 (defn free-image! [img] (when (non-null? img) (img-free* img)))
 (defn width [img] (img-width* img))
 (defn height [img] (img-height* img))
@@ -141,7 +147,7 @@
 ;; ---- masks -------------------------------------------------------------------
 (defn new-mask
   "A mask for a w x h image stored at 1/div resolution, filled with `v`."
-  [w h div v] (mask-new* (int w) (int h) (int div) (float v)))
+  [w h div v] (allocated "new mask" (mask-new* (int w) (int h) (int div) (float v))))
 (defn free-mask! [m] (when (non-null? m) (mask-free* m)))
 (defn mask-fill! [m v] (mask-fill* m (float v)))
 (defn mask-invert! [m] (mask-invert* m))
@@ -155,7 +161,7 @@
 
 (defn mask-at [m x y] (double (mask-sample* m (double x) (double y))))
 
-(defn mask-copy "An independent copy of mask `m` (free it with free-mask!)." [m] (mask-copy* m))
+(defn mask-copy "An independent copy of mask `m` (free it with free-mask!)." [m] (allocated "mask copy" (mask-copy* m)))
 
 (defn mask-take-dirty!
   "The image rect [x y w h] the mask changed in since the last call, or nil;
@@ -255,19 +261,22 @@
            (ffi/copy p (+ p (* 8 tone-n)) (* 4 tone-n))
            p)))
 
+(defn- or-null [p] (or p ffi/null))
+
 (defn- layer-struct
   "One layer's AlmzLayer fields, its tables written into `arena`."
   [arena {:keys [img mask opacity enabled tone cube radial] :as l}]
   (let [lut (curve-table arena l)
         cube-p (when cube (floats arena (:data cube)))
-        sat (float (get tone :saturation 0.0))]
-    {:img (or img ffi/null) :mask (or mask ffi/null)
+        sat (float (get tone :saturation 0.0))
+        does-something? (or img lut cube-p (not (zero? sat)))]
+    {:img (or-null img) :mask (or-null mask)
      :opacity (float (or opacity 1.0))
-     :enabled (if (and enabled (or img lut cube-p (not (zero? sat)))) 1 0)
-     :lut (or lut ffi/null)
+     :enabled (if (and enabled does-something?) 1 0)
+     :lut (or-null lut)
      :saturation sat
      :cube-n (int (if cube-p (:n cube) 0))
-     :cube (or cube-p ffi/null)
+     :cube (or-null cube-p)
      :radial (mapv float (or radial [0 0 0 0 0 0]))}))
 
 (defn- write-layers
@@ -509,7 +518,7 @@
   [p n]
   (call-with-err "bad JPEG" #(load-jpeg-mem* p n %) non-null?))
 
-(defn rgb8->image [p w h] (from-rgb8* p (int w) (int h)))
+(defn rgb8->image [p w h] (allocated "image" (from-rgb8* p (int w) (int h))))
 
 (def profiles
   "Export colour spaces (ALMZ_PROF_* in almazimg.h)."

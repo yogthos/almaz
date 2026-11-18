@@ -1,0 +1,78 @@
+[[:violation "native/tools/build_native.clj" "bui!" "cyclomatic"]
+ [:violation "native/tools/build_native.clj" "bui!" "lines"]
+ [:violation "native/tools/package_linux.clj" "-main" "lines"]
+ [:violation "native/tools/package_macos.clj" "-main" "lines"]
+ [:violation "src/almaz/engine.clj" "repair!" "lines"]
+ [:violation "src/almaz/geom.clj" "drag-crop" "params"]
+ [:violation "src/almaz/geom.clj" "drag-locked" "params"]
+ [:violation "src/almaz/geom.clj" "place" "params"]
+ [:violation "src/almaz/lens.clj" "interpolate" "params"]
+ [:violation "src/almaz/lens.clj" "interpolate-vignetting" "params"]
+ [:violation "src/almaz/lens.clj" "vignetting-dist" "params"]
+ [:violation "src/almaz/loading.clj" "fit-geometry" "params"]
+ [:violation "src/almaz/pixels.clj" "inpaint" "params"]
+ [:violation "src/almaz/pixels.clj" "inpaint!" "params"]
+ [:violation "src/almaz/pixels.clj" "lens-warp!" "params"]
+ [:violation "src/almaz/pixels.clj" "mask-set!" "params"]
+ [:violation "src/almaz/pixels.clj" "seg-input!" "params"]
+ [:violation "src/almaz/strip.clj" "reveal" "params"]
+ [:violation "src/almaz/ui/canvas.clj" "on-press" "cyclomatic"]
+ [:violation "src/almaz/ui/canvas.clj" "overlay-items" "params"]
+ [:violation "src/almaz/ui/chrome.clj" "filmstrip" "lines"]
+ [:violation "src/almaz/ui/chrome.clj" "thumb-items" "params"]
+ [:violation "src/almaz/ui/chrome.clj" "top-bar" "cyclomatic"]
+ [:violation "src/almaz/ui/chrome.clj" "top-bar" "lines"]
+ [:violation "src/almaz/ui/export.clj" "panel" "lines"]
+ [:violation "src/almaz/ui/shortcuts.clj" "run-action!" "cyclomatic"]
+ [:violation "src/almaz/ui/sidebar.clj" "levels-settings" "lines"]
+ [:violation "src/almaz/ui/sidebar.clj" "setting" "params"]
+ [:violation
+  "src/almaz/ui/sidebar.clj"
+  "src/almaz/ui/sidebar.clj"
+  "file_lines"]
+ [:violation "src/almaz/worker.clj" "mask!" "lines"]
+ [:duplicate
+  "native/tools/package_linux.clj"
+  "-main"
+  "native/tools/package_macos.clj"
+  "-main"]
+ [:duplicate
+  "native/tools/package_linux.clj"
+  "bui-lib"
+  "native/tools/package_macos.clj"
+  "bui-lib"]
+ [:duplicate
+  "native/tools/package_linux.clj"
+  "sh*"
+  "native/tools/package_macos.clj"
+  "sh"]
+ [:duplicate
+  "src/almaz/download.clj"
+  "sha256"
+  "src/almaz/pixels.clj"
+  "read-meta"]
+ [:duplicate
+  "src/almaz/download.clj"
+  "sha256"
+  "src/almaz/raw.clj"
+  "metadata"]
+ [:duplicate
+  "src/almaz/infer/coreml.clj"
+  "CoremlBackend/load-model"
+  "src/almaz/infer/onnxruntime.clj"
+  "OnnxruntimeBackend/load-model"]
+ [:duplicate
+  "src/almaz/pixels.clj"
+  "read-meta"
+  "src/almaz/raw.clj"
+  "metadata"]
+ [:duplicate
+  "src/almaz/ui/sidebar.clj"
+  "denoise-settings"
+  "src/almaz/ui/sidebar.clj"
+  "tone-slider"]
+ [:duplicate
+  "src/almaz/worker.clj"
+  "export-task"
+  "src/almaz/worker.clj"
+  "mask-task"]]

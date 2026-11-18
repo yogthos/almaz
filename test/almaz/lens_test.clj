@@ -170,3 +170,42 @@
   (testing "method :lensfun ignores it"
     (is (= :lensfun (:method (lens/plan {:w 600 :h 400 :exif sony :embedded flat-sony}
                                         {:method :lensfun :dist? true}))))))
+
+(deftest word-splitting-edge-cases
+  (is (= [] (lens/split-words nil)))
+  (is (= [] (lens/split-words "  ")))
+  (testing "a lone f or punctuation is skipped, * and + kept, .0 dropped from numbers"
+    (is (= ["*" "+" "1" "2.50" "ab" "c"] (lens/split-words "f * + - 1.0 2.50 ab.c")))))
+
+(deftest fuzzy-scoring-edge-cases
+  (let [pw (lens/split-words "Nikkor 50mm f/1.8")]
+    (testing "without all?, missing words lower the score instead of failing"
+      (is (= 80 (lens/fuzzy-score pw "Nikkor Z 50mm f/1.8 S" false)))
+      (is (= 57 (lens/fuzzy-score pw "Nikkor 85mm" false)))
+      (is (zero? (lens/fuzzy-score pw "Nikkor 85mm" true))))
+    (testing "nothing to compare scores 0"
+      (is (zero? (lens/fuzzy-score pw "" false)))
+      (is (zero? (lens/fuzzy-score [] "x" false))))))
+
+(deftest guessing-edge-cases
+  (testing "a set aperture and focal skip guessing; a missing max focal takes the min"
+    (is (= {:focal [24.0 24.0] :aperture [2.8 0.0]}
+           (select-keys (lens/guess-parameters {:model ["Lens 24-70mm f/2.8"] :focal [24.0 0.0] :aperture [2.8 0.0]})
+                        [:focal :aperture]))))
+  (testing "a name that isn't a lens falls back to the calibrations"
+    (is (= {:focal [100.0 200.0] :aperture [4.0 5.6]}
+           (select-keys (lens/guess-parameters
+                         {:model ["1.4x Teleconverter"]
+                          :calibs [{:distortion [["poly3" 100.0 100.0 0.01]]
+                                    :vignetting [["pa" 100.0 4.0 10.0 0.1 0.2 0.3] ["pa" 200.0 5.6 10.0 0.1 0.2 0.3]]}]})
+                        [:focal :aperture])))))
+
+(deftest tca-and-vignetting-rescaling
+  (let [lc {:crop 1.5 :aspect 1.5}]
+    (is (= [1.0 1.0 0.375 0.75 4.21875 5.625]
+           (:terms (lens/rescale-tca (assoc lc :model :poly3 :terms [1.0 1.0 0.1 0.2 0.3 0.4]) 30.0))))
+    (is (= [1.0 1.0] (:terms (lens/rescale-tca (assoc lc :model :linear :terms [1.0 1.0]) 30.0))))
+    (is (every? true? (map #(< (Math/abs (- %1 %2)) 1e-9)
+                           [0.4326923076923076 3.7444526627218924 24.30293795516612]
+                           (:terms (lens/rescale-vignetting (assoc lc :model :pa :terms [0.1 0.2 0.3]) 30.0)))))
+    (is (= [0.1] (:terms (lens/rescale-vignetting (assoc lc :model :none :terms [0.1]) 30.0))))))

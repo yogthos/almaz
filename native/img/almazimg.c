@@ -19,7 +19,7 @@
 
 static char *dupstr(const char *s) {
   char *o = (char *)malloc(strlen(s) + 1);
-  strcpy(o, s);
+  if (o) strcpy(o, s);
   return o;
 }
 static void set_err(char **err, const char *msg) {
@@ -83,7 +83,7 @@ int almz_gpu_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers, c
                     int nearest, int luma_alpha);
 void almz_gpu_forget(uint64_t uid);
 int almz_gpu_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur);
-#ifndef __APPLE__
+#if !defined(__APPLE__) || defined(ALMZ_NO_GPU)
 int almz_gpu_focus(AlmzImg *dst, const AlmzImg *src, float clarity, float radius, float blur) { return 0; }
 int almz_gpu_render(const AlmzImg *base, const AlmzLayer *layers, int nlayers, const double *xf,
                     const int32_t *clip, const AlmzMask *overlay, const float *tint, uint8_t *out,
@@ -95,28 +95,41 @@ int almz_gpu_active(void) { return 0; }
 #endif
 
 /* ---- images ------------------------------------------------------------ */
-static void pyr_alloc(AlmzImg *img) {
+/* 0 when a level couldn't be allocated (nlev then counts the ones that were,
+ * so almz_img_free releases them) */
+static int pyr_alloc(AlmzImg *img) {
   int w = img->w, h = img->h, k = 1;
   img->lw[0] = w;
   img->lh[0] = h;
+  img->nlev = 1;
   while (k < ALMZ_MAX_LEV && w > 64 && h > 64) {
     w = (w + 1) / 2;
     h = (h + 1) / 2;
     img->lw[k] = w;
     img->lh[k] = h;
     img->lev[k] = (uint16_t *)calloc((size_t)w * h * 3, sizeof(uint16_t));
-    k++;
+    if (!img->lev[k]) return 0;
+    img->nlev = ++k;
   }
-  img->nlev = k;
+  return 1;
 }
 
+/* Takes ownership of `data` even on failure (NULL data: NULL). */
 AlmzImg *almz_img_wrap(int w, int h, uint16_t *data) {
+  if (!data) return NULL;
   AlmzImg *img = (AlmzImg *)calloc(1, sizeof(AlmzImg));
+  if (!img) {
+    free(data);
+    return NULL;
+  }
   img->w = w;
   img->h = h;
   img->lev[0] = data;
   img->uid = next_uid();
-  pyr_alloc(img);
+  if (!pyr_alloc(img)) {
+    almz_img_free(img);
+    return NULL;
+  }
   almz_img_pyr_update(img, 0, 0, w, h);
   return img;
 }
@@ -127,12 +140,19 @@ AlmzImg *almz_img_new(int w, int h) {
 
 AlmzImg *almz_img_copy(const AlmzImg *src) {
   AlmzImg *img = (AlmzImg *)calloc(1, sizeof(AlmzImg));
+  if (!img) return NULL;
   *img = *src;
   img->uid = next_uid();
   img->rev = 0;
+  img->nlev = 0;
   for (int k = 0; k < src->nlev; k++) {
     size_t n = (size_t)src->lw[k] * src->lh[k] * 3;
     img->lev[k] = (uint16_t *)malloc(n * sizeof(uint16_t));
+    if (!img->lev[k]) {
+      almz_img_free(img);
+      return NULL;
+    }
+    img->nlev = k + 1;
     memcpy(img->lev[k], src->lev[k], n * sizeof(uint16_t));
   }
   return img;
@@ -199,6 +219,7 @@ void almz_img_set_f32(AlmzImg *img, const float *rgb) {
 /* ---- masks ------------------------------------------------------------- */
 AlmzMask *almz_mask_new(int iw, int ih, int div, float value) {
   AlmzMask *m = (AlmzMask *)calloc(1, sizeof(AlmzMask));
+  if (!m) return NULL;
   div = MAX(1, div);
   m->iw = iw;
   m->ih = ih;
@@ -208,6 +229,12 @@ AlmzMask *almz_mask_new(int iw, int ih, int div, float value) {
   size_t n = (size_t)m->w * m->h;
   m->paint = (float *)malloc(n * sizeof(float));
   m->soft = (float *)malloc(n * sizeof(float));
+  if (!m->paint || !m->soft) {
+    free(m->paint);
+    free(m->soft);
+    free(m);
+    return NULL;
+  }
   m->uid = next_uid();
   almz_mask_fill(m, value);
   return m;
@@ -262,18 +289,21 @@ static void soft_update(AlmzMask *m, int x0, int y0, int x1, int y1) {
   y1 = MIN(m->h, y1);
   if (x1 <= x0 || y1 <= y0) return;
   const float sigma = m->feather / m->div;
-  if (sigma < 0.3f) {
+  const int R = sigma < 0.3f ? 0 : (int)ceilf(3.0f * sigma);
+  const int ty0 = MAX(0, y0 - R), ty1 = MIN(m->h, y1 + R), tw = x1 - x0;
+  float *k = R ? (float *)malloc((2 * R + 1) * sizeof(float)) : NULL;
+  float *tmp = R ? (float *)malloc((size_t)(ty1 - ty0) * tw * sizeof(float)) : NULL;
+  if (!k || !tmp) {
+    /* no feather (or no memory for it): soft is the paint as is */
+    free(k);
+    free(tmp);
     for (int y = y0; y < y1; y++)
       memcpy(m->soft + (size_t)y * m->w + x0, m->paint + (size_t)y * m->w + x0, (x1 - x0) * sizeof(float));
     return;
   }
-  const int R = (int)ceilf(3.0f * sigma);
-  float *k = (float *)malloc((2 * R + 1) * sizeof(float));
   float ks = 0;
   for (int i = -R; i <= R; i++) ks += k[i + R] = expf(-(float)(i * i) / (2 * sigma * sigma));
   for (int i = 0; i <= 2 * R; i++) k[i] /= ks;
-  const int ty0 = MAX(0, y0 - R), ty1 = MIN(m->h, y1 + R), tw = x1 - x0;
-  float *tmp = (float *)malloc((size_t)(ty1 - ty0) * tw * sizeof(float));
   for (int y = ty0; y < ty1; y++) {
     const float *row = m->paint + (size_t)y * m->w;
     float *o = tmp + (size_t)(y - ty0) * tw;
@@ -1074,12 +1104,18 @@ void almz_tile_write(AlmzImg *dst, const float *src, int tw, int th, int x0, int
 }
 
 /* separable gaussian blur of one plane (edges clamped) */
-static void blur_plane(const float *src, float *dst, int w, int h, float sigma) {
+/* 0 when out of memory (dst untouched) */
+static int blur_plane(const float *src, float *dst, int w, int h, float sigma) {
   const int R = MAX(1, (int)ceilf(3.0f * sigma));
   float *k = (float *)malloc((2 * R + 1) * sizeof(float)), ks = 0;
+  float *tmp = (float *)malloc((size_t)w * h * sizeof(float));
+  if (!k || !tmp) {
+    free(k);
+    free(tmp);
+    return 0;
+  }
   for (int i = -R; i <= R; i++) ks += k[i + R] = expf(-(float)(i * i) / (2 * sigma * sigma));
   for (int i = 0; i <= 2 * R; i++) k[i] /= ks;
-  float *tmp = (float *)malloc((size_t)w * h * sizeof(float));
   for (int y = 0; y < h; y++)
     for (int x = 0; x < w; x++) {
       float s = 0;
@@ -1094,14 +1130,16 @@ static void blur_plane(const float *src, float *dst, int w, int h, float sigma) 
     }
   free(tmp);
   free(k);
+  return 1;
 }
 
 void almz_tile_unsharp(float *t, int tw, int th, float sigma, float amount) {
   const size_t plane = (size_t)tw * th;
   float *b = (float *)malloc(plane * sizeof(float));
+  if (!b) return; /* out of memory: the tile is left unsharpened */
   for (int ch = 0; ch < 3; ch++) {
     float *p = t + ch * plane;
-    blur_plane(p, b, tw, th, MAX(0.3f, sigma));
+    if (!blur_plane(p, b, tw, th, MAX(0.3f, sigma))) break;
     for (size_t i = 0; i < plane; i++) p[i] = CLAMP(p[i] + amount * (p[i] - b[i]), 0.0f, 1.0f);
   }
   free(b);
@@ -1110,11 +1148,10 @@ void almz_tile_unsharp(float *t, int tw, int th, float sigma, float amount) {
 void almz_tile_detail(float *out, const float *in, int tw, int th, float sigma, float amount) {
   const size_t plane = (size_t)tw * th;
   float *bi = (float *)malloc(plane * sizeof(float)), *bo = (float *)malloc(plane * sizeof(float));
-  for (int ch = 0; ch < 3; ch++) {
+  for (int ch = 0; bi && bo && ch < 3; ch++) { /* out of memory: no detail put back */
     const float *pi = in + ch * plane;
     float *po = out + ch * plane;
-    blur_plane(pi, bi, tw, th, MAX(0.3f, sigma));
-    blur_plane(po, bo, tw, th, MAX(0.3f, sigma));
+    if (!blur_plane(pi, bi, tw, th, MAX(0.3f, sigma)) || !blur_plane(po, bo, tw, th, MAX(0.3f, sigma))) break;
     for (size_t i = 0; i < plane; i++)
       po[i] = CLAMP(po[i] + amount * ((pi[i] - bi[i]) - (po[i] - bo[i])), 0.0f, 1.0f);
   }
@@ -1191,6 +1228,7 @@ void almz_estimate(const AlmzImg *img, float *noise, float *sharpness) {
 /* ---- file I/O ---------------------------------------------------------- */
 AlmzImg *almz_from_rgb8(const uint8_t *rgb, int w, int h) {
   uint16_t *d = (uint16_t *)malloc((size_t)w * h * 3 * sizeof(uint16_t));
+  if (!d) return NULL;
   for (size_t i = 0; i < (size_t)w * h * 3; i++) d[i] = (uint16_t)(rgb[i] * 257);
   return almz_img_wrap(w, h, d);
 }
@@ -1209,6 +1247,11 @@ static AlmzImg *jpeg_read(struct jpeg_decompress_struct *ci, jerr_t *je, char **
   jpeg_start_decompress(ci);
   const int w = ci->output_width, h = ci->output_height;
   uint8_t *rgb = (uint8_t *)malloc((size_t)w * h * 3);
+  if (!rgb) {
+    jpeg_abort_decompress(ci);
+    set_err(err, "out of memory");
+    return NULL;
+  }
   while (ci->output_scanline < (JDIMENSION)h) {
     JSAMPROW row = rgb + (size_t)ci->output_scanline * w * 3;
     jpeg_read_scanlines(ci, &row, 1);
@@ -1216,7 +1259,7 @@ static AlmzImg *jpeg_read(struct jpeg_decompress_struct *ci, jerr_t *je, char **
   jpeg_finish_decompress(ci);
   AlmzImg *img = almz_from_rgb8(rgb, w, h);
   free(rgb);
-  (void)err;
+  if (!img) set_err(err, "out of memory");
   return img;
 }
 
@@ -1280,11 +1323,20 @@ static AlmzImg *load_png(FILE *f, char **err) {
   png_read_update_info(p, info);
   d = (uint16_t *)malloc((size_t)w * h * 3 * sizeof(uint16_t));
   rows = (png_bytep *)malloc(sizeof(png_bytep) * h);
+  if (!d || !rows) {
+    png_destroy_read_struct(&p, &info, NULL);
+    free(d);
+    free(rows);
+    set_err(err, "out of memory");
+    return NULL;
+  }
   for (int y = 0; y < h; y++) rows[y] = (png_bytep)(d + (size_t)y * w * 3);
   png_read_image(p, rows);
   png_destroy_read_struct(&p, &info, NULL);
   free(rows);
-  return almz_img_wrap(w, h, d);
+  AlmzImg *img = almz_img_wrap(w, h, d);
+  if (!img) set_err(err, "out of memory");
+  return img;
 }
 
 static void tiff_silent(const char *m, const char *fmt, va_list ap) {
@@ -1309,21 +1361,32 @@ static AlmzImg *load_tiff(const char *path, char **err) {
   TIFFGetFieldDefaulted(t, TIFFTAG_PLANARCONFIG, &cfg);
   TIFFGetFieldDefaulted(t, TIFFTAG_PHOTOMETRIC, &photo);
   uint16_t *d = (uint16_t *)malloc((size_t)w * h * 3 * sizeof(uint16_t));
+  if (!d) {
+    TIFFClose(t);
+    set_err(err, "out of memory");
+    return NULL;
+  }
   if (bps == 16 && spp >= 3 && cfg == PLANARCONFIG_CONTIG && photo == PHOTOMETRIC_RGB) {
     uint16_t *line = (uint16_t *)malloc(TIFFScanlineSize(t));
-    for (uint32_t y = 0; y < h; y++) {
+    for (uint32_t y = 0; line && y < h; y++) {
       if (TIFFReadScanline(t, line, y, 0) < 0) break;
       for (uint32_t x = 0; x < w; x++)
         for (int c = 0; c < 3; c++) d[((size_t)y * w + x) * 3 + c] = line[x * spp + c];
     }
+    if (!line) {
+      free(d);
+      TIFFClose(t);
+      set_err(err, "out of memory");
+      return NULL;
+    }
     free(line);
   } else {
     uint32_t *rgba = (uint32_t *)malloc((size_t)w * h * 4);
-    if (!TIFFReadRGBAImageOriented(t, w, h, rgba, ORIENTATION_TOPLEFT, 0)) {
+    if (!rgba || !TIFFReadRGBAImageOriented(t, w, h, rgba, ORIENTATION_TOPLEFT, 0)) {
       free(rgba);
       free(d);
       TIFFClose(t);
-      set_err(err, "unsupported TIFF");
+      set_err(err, rgba ? "unsupported TIFF" : "out of memory");
       return NULL;
     }
     for (size_t i = 0; i < (size_t)w * h; i++) {
@@ -1334,7 +1397,9 @@ static AlmzImg *load_tiff(const char *path, char **err) {
     free(rgba);
   }
   TIFFClose(t);
-  return almz_img_wrap((int)w, (int)h, d);
+  AlmzImg *img = almz_img_wrap((int)w, (int)h, d);
+  if (!img) set_err(err, "out of memory");
+  return img;
 }
 
 AlmzImg *almz_load(const char *path, char **err) {

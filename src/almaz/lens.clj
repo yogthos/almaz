@@ -44,29 +44,67 @@
 (defn- punct? [c] (contains? punct c))
 (defn- space? [c] (and c (Character/isWhitespace (char c))))
 
+(defn- char-class [c] (cond (digit? c) :digit (punct? c) :punct :else :word))
+
+(defn- in-class?
+  "Does `d` continue a run of class `cls`? (A number keeps its dots.)"
+  [cls d]
+  (case cls
+    :digit (or (digit? d) (= \. d))
+    :punct (punct? d)
+    :word (not (or (space? d) (digit? d) (punct? d)))))
+
+(defn- run-end "The end of the run of class `cls` starting at i." [s i n cls]
+  (loop [j (inc i)] (if (and (< j n) (in-class? cls (nth s j))) (recur (inc j)) j)))
+
+(defn- skip-spaces [s i n]
+  (loop [i i] (if (and (< i n) (space? (nth s i))) (recur (inc i)) i)))
+
+(defn- word-text "The word s[i, end), a number without its \".0\"." [s i end cls]
+  (let [w (subs s i end)]
+    (if (and (= :digit cls) (>= (count w) 2) (str/ends-with? w ".0")) (subs w 0 (- (count w) 2)) w)))
+
+(defn- solitary?
+  "A one-character word that's skipped: punctuation or \"f\", but not * or +."
+  [c len]
+  (and (= 1 len) (or (punct? c) (= \f (Character/toLowerCase (char c))))
+       (not= \* c) (not= \+ c)))
+
 (defn split-words
   "lfFuzzyStrCmp::Split: the words of `s` by character class (a number with
    its dots, a run of punctuation, a run of anything else), \".0\" dropped
    from numbers, solitary punctuation and a lone \"f\" skipped (but not \"*\"
    or \"+\"), lower-cased and sorted."
   [s]
-  (loop [i 0 acc []]
-    (let [n (count (or s ""))
-          i (loop [i i] (if (and (< i n) (space? (nth s i))) (recur (inc i)) i))]
+  (let [n (count (or s ""))]
+    (loop [i (skip-spaces s 0 n) acc []]
       (if (>= i n)
         (vec (sort acc))
         (let [c (nth s i)
-              end (cond
-                    (digit? c) (loop [j (inc i)] (if (and (< j n) (or (digit? (nth s j)) (= \. (nth s j)))) (recur (inc j)) j))
-                    (punct? c) (loop [j (inc i)] (if (and (< j n) (punct? (nth s j))) (recur (inc j)) j))
-                    :else (loop [j (inc i)]
-                            (let [d (when (< j n) (nth s j))]
-                              (if (and d (not (space? d)) (not (digit? d)) (not (punct? d))) (recur (inc j)) j))))
-              w (subs s i end)
-              w (if (and (digit? c) (>= (count w) 2) (str/ends-with? w ".0")) (subs w 0 (- (count w) 2)) w)
-              skip? (and (= 1 (- end i)) (or (punct? c) (= \f (Character/toLowerCase (char c))))
-                         (not= \* c) (not= \+ c))]
-          (recur end (if skip? acc (conj acc (str/lower-case w)))))))))
+              cls (char-class c)
+              end (run-end s i n cls)
+              acc (if (solitary? c (- end i)) acc (conj acc (str/lower-case (word-text s i end cls))))]
+          (recur (skip-spaces s end n) acc))))))
+
+(defn- seek-word
+  "Match words `mw` from index mi on, for pattern word p: [:hit i] at an
+   equal word, [:past i] at a greater one, [:end] past the last."
+  [p mw mi]
+  (loop [mi mi]
+    (if (>= mi (count mw))
+      [:end]
+      (let [r (compare p (nth mw mi))]
+        (cond (zero? r) [:hit mi]
+              (neg? r) [:past mi]
+              :else (recur (inc mi)))))))
+
+(defn- fuzzy-step
+  "[next-index score] after seeking one pattern word, or nil when `all?`
+   and the word is missing (no match)."
+  [all? [mi score] [outcome at]]
+  (cond (= :hit outcome) [(inc at) (inc score)]
+        all? nil
+        :else [mi score]))
 
 (defn fuzzy-score
   "lfFuzzyStrCmp::Compare of pattern words `pw` (split-words) against the
@@ -74,25 +112,11 @@
    `all?` requires every pattern word in the match."
   [pw match all?]
   (let [mw (split-words match)
-        np (count pw) nm (count mw)]
-    (if (or (zero? np) (zero? nm))
-      0
-      (loop [[p & ps :as pws] pw mi 0 score 0]
-        (if (empty? pws)
-          (quot (* score 200) (+ np nm))
-          (let [old mi
-                [mi score fail?]
-                (loop [mi mi]
-                  (if (>= mi nm)
-                    [mi score false]
-                    (let [r (compare p (nth mw mi))]
-                      (cond (zero? r) [mi (inc score) false]
-                            (neg? r) (if all? [mi score true] [(dec old) score false])
-                            :else (recur (inc mi))))))]
-            (cond
-              fail? 0
-              all? (if (>= mi nm) 0 (recur ps (inc mi) score))
-              :else (recur ps (if (or (neg? mi) (>= mi nm)) old (inc mi)) score))))))))
+        np (count pw) nm (count mw)
+        [_ score] (when (and (pos? np) (pos? nm))
+                    (reduce (fn [st p] (or (fuzzy-step all? st (seek-word p mw (first st))) (reduced nil)))
+                            [0 0] pw))]
+    (if score (quot (* score 200) (+ np nm)) 0)))
 
 (defn- ml-fuzzy
   "lfFuzzyStrCmp::Compare over every language variant: the best score."
@@ -121,26 +145,33 @@
               (mapv #(some-> (nth m %) atof) idx)))
           name-patterns)))
 
+(defn- min* [a b] (if (and a b) (min a b) (or a b)))
+(defn- max* [a b] (if (and a b) (max a b) (or a b)))
+
+(defn- guessed-ranges
+  "The focal and aperture range a lens's name and then calibrations give,
+   nil each where neither says (lensfun's \"not found\" sentinels)."
+  [model calibs]
+  (let [[nf xf na] (from-name (first model))
+        focals (for [c calibs k [:distortion :tca :vignetting] e (get c k)] (double (nth e 1)))
+        aps (for [c calibs e (:vignetting c)] (double (nth e 2)))]
+    {:minf (reduce min* nf focals) :maxf (reduce max* xf focals)
+     :mina (reduce min* na aps) :maxa (reduce max* nil aps)}))
+
+(defn- unless-set "v, or `guess` when v is 0 and there is one." [v guess]
+  (if (and guess (zero? v)) guess v))
+
 (defn guess-parameters
   "lfLens::GuessParameters: fill a lens's missing focal and aperture range
    from its name, else from its calibrations."
   [{:keys [model calibs] [min-f max-f] :focal [min-a max-a] :aperture :as lens}]
-  (let [min-f (or min-f 0.0) max-f (or max-f 0.0) min-a (or min-a 0.0) max-a (or max-a 0.0)
-        need? (or (zero? min-a) (zero? min-f))
-        ;; nil = lensfun's "not found" sentinels; the name and then every
-        ;; calibration narrow them
-        [nf xf na] (when need? (from-name (first model)))
-        lo (fn [a b] (if (and a b) (min a b) (or a b)))
-        hi (fn [a b] (if (and a b) (max a b) (or a b)))
-        focals (when need? (for [c calibs k [:distortion :tca :vignetting] e (get c k)] (double (nth e 1))))
-        aps (when need? (for [c calibs e (:vignetting c)] (double (nth e 2))))
-        minf (reduce lo nf focals) maxf (reduce hi xf focals)
-        mina (reduce lo na aps) maxa (reduce hi nil aps)
-        min-f' (if (and minf (zero? min-f)) minf min-f)
-        max-f' (if (and maxf (zero? max-f)) maxf max-f)]
+  (let [[min-f max-f min-a max-a] (map #(or % 0.0) [min-f max-f min-a max-a])
+        {:keys [minf maxf mina maxa]} (when (or (zero? min-a) (zero? min-f)) (guessed-ranges model calibs))
+        min-f' (unless-set min-f minf)
+        max-f' (unless-set max-f maxf)]
     (assoc lens
            :focal [min-f' (if (zero? max-f') min-f' max-f')]
-           :aperture [(if (and mina (zero? min-a)) mina min-a) (if (and maxa (zero? max-a)) maxa max-a)])))
+           :aperture [(unless-set min-a mina) (unless-set max-a maxa)])))
 
 (defn- valid-lens?
   "lfLens::Check, after guessing."
@@ -188,32 +219,51 @@
                               (>= cam-crop (* c 0.96)) 3 :else 0))))
           0 calibs))
 
+(defn- crop-points [_ _ m camera]
+  (if (and camera (seq (:calibs m)))
+    (let [cs (crop-score (double (:crop camera)) (:calibs m))] (when (pos? cs) cs))
+    0))
+
+(defn- bound-points
+  "Points for one end (`end` first or second) of range `k` (:focal or
+   :aperture): nil when the lens's can't be the pattern's."
+  [k end]
+  (fn [_ pattern m _]
+    (case (compare-num (end (k pattern)) (end (k m))) -1 nil 1 10 0)))
+
+(defn- mount-points [{:keys [mounts]} _ m camera]
+  (let [compat (when-let [mt (:mount camera)] (not-empty (get mounts mt)))
+        fits? (fn [mount] (some #(str= mount %) (:mounts m)))]
+    (if (and (seq (:mounts m)) (or camera compat))
+      (cond (and (:mount camera) (fits? (:mount camera))) 10
+            (some fits? compat) 9)
+      0)))
+
+(defn- maker-points [_ pattern m _]
+  (if (and (seq (:maker pattern)) (seq (:maker m)))
+    (when (mlstr= (first (:maker pattern)) (:maker m)) 10)
+    0))
+
+(defn- model-points [_ pattern m _]
+  (if (and (:words pattern) (seq (:model m)))
+    (let [s (ml-fuzzy (:words pattern) (:model m) true)]
+      (when (pos? s) (max 1 (quot (* s 4) 10))))
+    0))
+
+(def ^:private score-steps
+  "MatchScore's checks in order, each (fn [dbase pattern lens camera]) ->
+   points, or nil when the lens is out."
+  [crop-points
+   (bound-points :focal first) (bound-points :focal second)
+   (bound-points :aperture first) (bound-points :aperture second)
+   mount-points maker-points model-points])
+
 (defn match-score
   "lfDatabase::MatchScore of database lens `m` for the `pattern` lens (its
    model's words in :words) on `camera`; 0 when it can't be that lens."
-  [{:keys [mounts]} pattern m camera]
-  (let [compat (when-let [mt (:mount camera)] (not-empty (get mounts mt)))]
-    (reduce
-     (fn [score step] (let [s (step)] (if (nil? s) (reduced 0) (+ score s))))
-     0
-     [#(if (and camera (seq (:calibs m)))
-         (let [cs (crop-score (double (:crop camera)) (:calibs m))] (when (pos? cs) cs))
-         0)
-      #(case (compare-num (first (:focal pattern)) (first (:focal m))) -1 nil 1 10 0)
-      #(case (compare-num (second (:focal pattern)) (second (:focal m))) -1 nil 1 10 0)
-      #(case (compare-num (first (:aperture pattern)) (first (:aperture m))) -1 nil 1 10 0)
-      #(case (compare-num (second (:aperture pattern)) (second (:aperture m))) -1 nil 1 10 0)
-      #(if (and (seq (:mounts m)) (or camera compat))
-         (cond (and (:mount camera) (some (fn [x] (str= (:mount camera) x)) (:mounts m))) 10
-               (some (fn [c] (some (fn [x] (str= c x)) (:mounts m))) compat) 9)
-         0)
-      #(if (and (seq (:maker pattern)) (seq (:maker m)))
-         (when (mlstr= (first (:maker pattern)) (:maker m)) 10)
-         0)
-      #(if (and (:words pattern) (seq (:model m)))
-         (let [s (ml-fuzzy (:words pattern) (:model m) true)]
-           (when (pos? s) (max 1 (quot (* s 4) 10))))
-         0)])))
+  [dbase pattern m camera]
+  (reduce (fn [score step] (if-let [s (step dbase pattern m camera)] (+ score s) (reduced 0)))
+          0 score-steps))
 
 (defn find-lenses
   "lfDatabase::FindLenses(camera, maker, model, 0): the database lenses that
@@ -300,6 +350,35 @@
         m (ffirst es)]
     (filterv #(= m (first %)) es)))
 
+(defn- calib-entry
+  "A calibration entry as interpolate-focal's result. `spec` {:kind :t0
+   (where the terms start) :attr (the calibration set's crop and aspect)}."
+  [{:keys [kind t0 attr]} e]
+  (merge attr {:model (keyword (first e)) :focal (nth e 1)
+               :real-focal (when (= kind :dist) (nth e 2))
+               :terms (vec (drop t0 e))}))
+
+(defn- interpolated-terms
+  "The terms between neighbours [s0 s1 s2 s3] at t, each scaled to its
+   focal length (param-scales) for interpolating."
+  [{:keys [kind t0]} [s0 s1 s2 s3 :as ss] focal t]
+  (let [fs (map #(some-> % (nth 1) double) ss)]
+    (vec (for [i (range (- (count s1) t0))]
+           (let [[v0 v1 v2 v3 vf] (param-scales kind i (concat fs [focal]))
+                 term #(* (nth %1 (+ t0 i)) %2)]
+             (/ (interpolate (when s0 (term s0 v0)) (term s1 v1) (term s2 v2) (when s3 (term s3 v3)) t)
+                vf))))))
+
+(defn- interpolated-entry
+  "The calibration at `focal` between neighbours s1 and s2 (s0, s3 beyond)."
+  [{:keys [kind attr] :as spec} [s0 s1 s2 s3 :as ss] focal]
+  (let [t (/ (- focal (nth s1 1)) (- (nth s2 1) (nth s1 1)))]
+    (merge attr
+           {:model (keyword (first s1)) :focal focal
+            :real-focal (when (= kind :dist)
+                          (interpolate (some-> s0 (nth 2)) (nth s1 2) (nth s2 2) (some-> s3 (nth 2)) t))
+            :terms (interpolated-terms spec ss focal t)})))
+
 (defn- interpolate-focal
   "Interpolate distortion (:dist, entries [model focal real t...]) or TCA
    (:tca, [model focal t...]) at `focal` for a crop factor; {:model :terms
@@ -309,28 +388,13 @@
         t0 (if (= kind :dist) 3 2)]
     (when-let [cs (calib-set lens crop key)]
       (let [es (first-model (get cs key))
-            attr {:crop (:crop cs) :aspect (:aspect cs)}
-            ->res (fn [e] (merge attr {:model (keyword (first e)) :focal (nth e 1)
-                                       :real-focal (when (= kind :dist) (nth e 2))
-                                       :terms (vec (drop t0 e))}))
+            spec {:kind kind :t0 t0 :attr {:crop (:crop cs) :aspect (:aspect cs)}}
             exact (first (filter #(== focal (nth % 1)) es))
-            [s0 s1 s2 s3] (spline-neighbours es focal)]
+            [_ s1 s2 :as ss] (spline-neighbours es focal)]
         (cond
-          exact (->res exact)
-          (not (and s1 s2)) (some-> (or s1 s2) ->res)
-          :else
-          (let [t (/ (- focal (nth s1 1)) (- (nth s2 1) (nth s1 1)))
-                fs (map #(some-> % (nth 1) double) [s0 s1 s2 s3])
-                n (- (count s1) t0)]
-            (merge attr
-                   {:model (keyword (first s1)) :focal focal
-                    :real-focal (when (= kind :dist)
-                                  (interpolate (some-> s0 (nth 2)) (nth s1 2) (nth s2 2) (some-> s3 (nth 2)) t))
-                    :terms (vec (for [i (range n)]
-                                  (let [[v0 v1 v2 v3 vf] (param-scales kind i (concat fs [focal]))
-                                        term #(* (nth %1 (+ t0 i)) %2)]
-                                    (/ (interpolate (when s0 (term s0 v0)) (term s1 v1) (term s2 v2) (when s3 (term s3 v3)) t)
-                                       vf))))})))))))
+          exact (calib-entry spec exact)
+          (not (and s1 s2)) (some->> (or s1 s2) (calib-entry spec))
+          :else (interpolated-entry spec ss focal))))))
 
 (defn interpolate-distortion "lfLens::InterpolateDistortion." [lens crop focal]
   (interpolate-focal lens crop focal :dist))
@@ -390,21 +454,25 @@
                               2 (/ (* c h) (Math/pow d 2))))
              terms))))
 
+(defn- rescale-terms
+  "The calibration's terms through (f terms h) when it is of `model`, h its
+   hugin scaling (a vignetting calibration's when `vignetting?`)."
+  [{:keys [terms] :as lc} real-focal {:keys [vignetting? model f]}]
+  (assoc lc :terms (if (= model (:model lc)) (f terms (hugin-scaling real-focal lc vignetting?)) terms)))
+
 (defn rescale-tca
   "mod-subpix.cpp rescale_polynomial_coefficients (forward)."
-  [{:keys [model terms] :as lct} real-focal]
-  (let [h (hugin-scaling real-focal lct false)]
-    (assoc lct :terms (if (= :poly3 model)
-                        (-> terms (update 2 * h) (update 3 * h) (update 4 * h h) (update 5 * h h))
-                        terms))))
+  [lct real-focal]
+  (rescale-terms lct real-focal
+                 {:vignetting? false :model :poly3
+                  :f (fn [terms h] (-> terms (update 2 * h) (update 3 * h) (update 4 * h h) (update 5 * h h)))}))
 
 (defn rescale-vignetting
   "mod-color.cpp rescale_polynomial_coefficients."
-  [{:keys [model terms] :as lcv} real-focal]
-  (let [h (hugin-scaling real-focal lcv true)]
-    (assoc lcv :terms (if (= :pa model)
-                        (mapv * terms [(Math/pow h 2) (Math/pow h 4) (Math/pow h 6)])
-                        terms))))
+  [lcv real-focal]
+  (rescale-terms lcv real-focal
+                 {:vignetting? true :model :pa
+                  :f (fn [terms h] (mapv * terms [(Math/pow h 2) (Math/pow h 4) (Math/pow h 6)]))}))
 
 (defn distort
   "ModifyCoord_Dist_*: a corrected (undistorted) normalized point [x y] ->
@@ -583,6 +651,31 @@
       (when (and focal focal35 (pos? focal) (pos? focal35)) (/ (double focal35) focal))
       1.0))
 
+(defn- use-embedded? [embedded method]
+  (and embedded (sony-valid? embedded) (#{:auto :embedded} (or method :auto))))
+
+(defn- corrections
+  "The lensfun calibrations the options ask for, at the shot's settings (nil
+   each that is off or missing)."
+  [lens crop {focal :focal aperture :fnumber} {:keys [dist? tca? vig?]}]
+  {:distortion (when dist? (interpolate-distortion lens crop focal))
+   :tca (when tca? (interpolate-tca lens crop focal))
+   :vignetting (when (and vig? aperture (pos? aperture))
+                 (interpolate-vignetting lens crop focal aperture 1000.0))})
+
+(defn- lensfun-plan-for
+  "plan's lensfun branch for a known lens and focal length."
+  [{:keys [w h exif]} camera lens {:keys [autofill?] :as opts}]
+  (let [focal (:focal exif)
+        crop (crop-factor camera exif)
+        corr (corrections lens crop exif opts)
+        photo {:lens lens :crop crop :focal focal :w w :h h}
+        scale (if autofill? (auto-scale (modifier photo corr)) 1.0)]
+    (when (some some? (vals corr))
+      (assoc (lensfun-plan photo corr scale)
+             :method :lensfun :lens lens :camera camera :scale scale
+             :corrections (set (keep (fn [[k v]] (when v k)) corr))))))
+
 (defn plan
   "How to correct a w x h photo: {:method :lensfun|:embedded ...plan}, or
    nil when there is nothing to correct with. `photo` {:w :h :exif
@@ -591,24 +684,16 @@
    detected one) :dist? :tca? :vig? :autofill?}. Lensfun vignetting is
    for the shot's aperture, at a distance of 1000 m (darktable's default
    when EXIF has none)."
-  [{:keys [w h exif embedded]} {:keys [method lens dist? tca? vig? autofill?] :as opts}]
-  (let [use-md? (and embedded (sony-valid? embedded) (#{:auto :embedded} (or method :auto)))]
-    (if use-md?
-      (assoc (embedded-plan {:w w :h h} (sony-coeffs embedded opts) autofill?) :method :embedded)
-      (when-not (= :embedded method)
-        (let [{:keys [camera] detected :lens} (detect exif)
-              lens (or (if (string? lens) (lens-named lens) lens) detected)
-              focal (:focal exif)]
-          (when (and lens focal (pos? focal))
-            (let [crop (crop-factor camera exif)
-                  aperture (:fnumber exif)
-                  corr {:distortion (when dist? (interpolate-distortion lens crop focal))
-                        :tca (when tca? (interpolate-tca lens crop focal))
-                        :vignetting (when (and vig? aperture (pos? aperture))
-                                      (interpolate-vignetting lens crop focal aperture 1000.0))}
-                  photo {:lens lens :crop crop :focal focal :w w :h h}
-                  scale (if autofill? (auto-scale (modifier photo corr)) 1.0)]
-              (when (some some? (vals corr))
-                (assoc (lensfun-plan photo corr scale)
-                       :method :lensfun :lens lens :camera camera :scale scale
-                       :corrections (set (keep (fn [[k v]] (when v k)) corr)))))))))))
+  [{:keys [w h exif embedded] :as photo} {:keys [method lens autofill?] :as opts}]
+  (cond
+    (use-embedded? embedded method)
+    (assoc (embedded-plan {:w w :h h} (sony-coeffs embedded opts) autofill?) :method :embedded)
+
+    (= :embedded method) nil
+
+    :else
+    (let [{:keys [camera] detected :lens} (detect exif)
+          lens (or (if (string? lens) (lens-named lens) lens) detected)
+          focal (:focal exif)]
+      (when (and lens focal (pos? focal))
+        (lensfun-plan-for photo camera lens opts)))))

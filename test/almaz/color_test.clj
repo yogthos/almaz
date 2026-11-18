@@ -250,3 +250,21 @@
               ch [:cv-l :cv-rgb :cv-g]
               rgb probe]
         (is (every? #(and (finite? %) (<= 0.0 % 1.0)) (apply-kind :curves {ch s} rgb)) (str ch s rgb))))))
+
+(deftest table-builds-are-serialized
+  (testing "concurrent requests build one table at a time, and the same settings once"
+    (reset! @#'c/cache {:order [] :tables {}})
+    (let [running (atom 0) peak (atom 0) builds (atom 0)
+          real @#'c/build-table]
+      (with-redefs [c/build-table (fn [kind p]
+                                    (swap! builds inc)
+                                    (swap! peak max (swap! running inc))
+                                    (Thread/sleep 30)
+                                    (swap! running dec)
+                                    (real kind p))]
+        (let [same {:hs-sat 0.25} other {:hs-sat -0.25}
+              fs (doall (concat (repeatedly 4 #(future (c/table :hsl same)))
+                                (repeatedly 2 #(future (c/table :hsl other)))))]
+          (run! deref fs)
+          (is (= 1 @peak) "never two builds at once")
+          (is (= 2 @builds) "each distinct setting built once"))))))
