@@ -15,7 +15,7 @@
 (ffi/defcfn coreml-free "almz_coreml_free" [:pointer] :void)
 (ffi/defcfn coreml-free-string "almz_free_string" [:pointer] :void)
 
-(def ^:private shim {:free-string coreml-free-string :backend :coreml})
+(def ^:private shim {:predict coreml-predict :free-string coreml-free-string :backend :coreml})
 
 (defrecord CoremlBackend []
   p/Backend
@@ -23,12 +23,13 @@
   (available?  [_] true)  ; TODO: gate on the shim dylib being loaded
   (load-model  [_ spec]
     (with-open [ar (ffi/confined-arena)]
-      (let [h (a/call-checked ar #(coreml-load (ffi/string->ptr ar (:artifact spec)) %) ffi/null? coreml-free-string
-                              "coreml load failed" {:backend :coreml :spec spec})]
+      (let [h (a/call-checked ar #(coreml-load (ffi/string->ptr ar (:artifact spec)) %)
+                              {:failed? ffi/null? :free-string coreml-free-string
+                               :message "coreml load failed" :data {:backend :coreml :spec spec}})]
         {:backend :coreml :handle h :inputs (:inputs spec) :outputs (:outputs spec)})))
   (run-session [_ session tensors]
-    (a/run-predict coreml-predict shim (:handle session) (:inputs session) (:outputs session) tensors))
+    (a/run-predict shim session tensors))
   (run-native [_ session inputs outputs]
-    (a/run-native coreml-predict shim (:handle session) inputs outputs))
+    (a/run-native shim session inputs outputs))
   (free-session [_ session]
     (when-let [h (:handle session)] (coreml-free h))))

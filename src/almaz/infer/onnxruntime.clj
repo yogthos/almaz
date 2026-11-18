@@ -15,7 +15,7 @@
 (ffi/defcfn ort-free "almz_ort_free" [:pointer] :void)
 (ffi/defcfn ort-free-string "almz_ort_free_string" [:pointer] :void)
 
-(def ^:private shim {:free-string ort-free-string :backend :onnxruntime})
+(def ^:private shim {:predict ort-predict :free-string ort-free-string :backend :onnxruntime})
 
 (defrecord OnnxruntimeBackend [ep]
   p/Backend
@@ -24,13 +24,14 @@
   (load-model  [_ spec]
     (with-open [ar (ffi/confined-arena)]
       (let [load #(ort-load (ffi/string->ptr ar (:artifact spec)) (ffi/string->ptr ar (name (:ep spec :cpu))) %)
-            h (a/call-checked ar load ffi/null? ort-free-string
-                              "onnxruntime load failed" {:backend :onnxruntime :spec spec})]
+            h (a/call-checked ar load
+                              {:failed? ffi/null? :free-string ort-free-string
+                               :message "onnxruntime load failed" :data {:backend :onnxruntime :spec spec}})]
         {:backend :onnxruntime :ep (:ep spec :cpu)
          :handle h :inputs (:inputs spec) :outputs (:outputs spec)})))
   (run-session [_ session tensors]
-    (a/run-predict ort-predict shim (:handle session) (:inputs session) (:outputs session) tensors))
+    (a/run-predict shim session tensors))
   (run-native [_ session inputs outputs]
-    (a/run-native ort-predict shim (:handle session) inputs outputs))
+    (a/run-native shim session inputs outputs))
   (free-session [_ session]
     (when-let [h (:handle session)] (ort-free h))))

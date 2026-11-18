@@ -82,7 +82,7 @@
 
 (defn- hist-frame
   "Draw doc's histogram (of `rs` over base, within `clip`) into `cell`."
-  [cell doc rs clip rev]
+  [cell {:keys [doc rs clip rev]}]
   (let [{:keys [w h]} @cell
         img (or (:base doc) (:preview doc))
         k [(:id doc) img rs clip rev w h]]
@@ -100,7 +100,7 @@
         editing? (= :dimensions @s/tab*)
         rs (when (:base doc) (refs doc))
         clip (when (and (:base doc) (not editing?)) (g/crop-rect doc))
-        {:keys [ptr w h version]} (hist-frame hist doc rs clip @s/pixels-rev*)]
+        {:keys [ptr w h version]} (hist-frame hist {:doc doc :rs rs :clip clip :rev @s/pixels-rev*})]
     [:canvas {:height-units 4 :events 1
               :on-configure (fn [cw ch] (swap! hist assoc :w (long cw) :h (long ch) :key nil))
               :canvas-items (if (and ptr (or (:base doc) (:preview doc)))
@@ -158,41 +158,50 @@
 ;; A section of its filter's panel, under a rule: where the filter applies. The
 ;; menu starts the mask (almaz.segment: the whole image, or what a model finds);
 ;; the brush refines it, shown tinted over the photo while it is out.
+(defn- mask-picker
+  "The selection menu, and what's being found for it (always there, so the
+   page doesn't change height under the pointer)."
+  [lid sel finding]
+  (list
+   [:hbox {:key :sel :spacing 4}
+    [:label {:text "Mask" :bold 1 :weight 0 :reqwidth (px 52)}]
+    [:dropdown {:items seg/labels :weight 1 :value (index-of seg/keys* sel)
+                :on-change #(act/select-mask! lid (nth seg/keys* (long %)))}]]
+   [:label {:key :finding :text (if finding (str (seg/describe finding) "…") "")
+            :text-color [1 0.85 0.4 1]}]))
+
+(defn- brush-sliders [tool]
+  [:vbox {:key :brush :spacing 4}
+   [:slider {:label "Brush size" :min 4 :max 1500 :integer 1 :value (long (:radius tool))
+             :on-change #(swap! s/tool* assoc :radius (double %))}]
+   [:slider {:label "Hardness" :min 0 :max 100 :integer 1 :value (pct (:hardness tool))
+             :on-change #(swap! s/tool* assoc :hardness (/ (double %) 100.0))}]])
+
+(defn- mask-buttons [lid]
+  [:hbox {:key :edit :align 1}
+   [:button {:text "Fill" :on-click #(act/mask-fill! lid 1.0)}]
+   [:button {:text "Clear" :on-click #(act/mask-fill! lid 0.0)}]
+   [:button {:text "Invert" :on-click #(act/mask-invert! lid)}]])
+
 (defn- mask-tools [layer tool]
   (let [lid (:id layer)
-        sel (or (:mask-sel layer) :all)
         active (when (= lid (:layer tool)) (:mode tool))
-        req @s/mask-req*
-        finding (when (= lid (:layer req)) (:sel req))]
-    [:vbox {:key :mask :spacing 4}
-     [:separator {:key :rule}]
-     [:hbox {:key :sel :spacing 4}
-      [:label {:text "Mask" :bold 1 :weight 0 :reqwidth (px 52)}]
-      [:dropdown {:items seg/labels :weight 1 :value (index-of seg/keys* sel)
-                  :on-change #(act/select-mask! lid (nth seg/keys* (long %)))}]]
-     ;; always there, so the page doesn't change height under the pointer
-     [:label {:key :finding :text (if finding (str (seg/describe finding) "…") "")
-              :text-color [1 0.85 0.4 1]}]
-     [:hbox {:key :mode :spacing 4}
-      [:label {:text "Brush" :weight 0 :reqwidth (px 52)}]
-      [:enum {:items ["Off" "Paint" "Erase"] :weight 1
-              :value (case active :paint 1 :erase 2 0)
-              :on-change #(act/set-tool! ([:pan :paint :erase] (long %)) lid)}]]
-     (when active
-       [:vbox {:key :brush :spacing 4}
-        [:slider {:label "Brush size" :min 4 :max 1500 :integer 1 :value (long (:radius tool))
-                  :on-change #(swap! s/tool* assoc :radius (double %))}]
-        [:slider {:label "Hardness" :min 0 :max 100 :integer 1 :value (pct (:hardness tool))
-                  :on-change #(swap! s/tool* assoc :hardness (/ (double %) 100.0))}]])
-     [:slider {:key :feather :label "Feather" :min 0 :max 200 :integer 1 :value (long (:feather layer))
-               :on-change #(act/set-feather! lid (double %))}]
-     [:hbox {:key :edit :align 1}
-      [:button {:text "Fill" :on-click #(act/mask-fill! lid 1.0)}]
-      [:button {:text "Clear" :on-click #(act/mask-fill! lid 0.0)}]
-      [:button {:text "Invert" :on-click #(act/mask-invert! lid)}]]
-     (when active
-       [:checkbox {:key :show :label "Show mask" :value (if (:show-mask tool) 1 0)
-                   :on-change #(swap! s/tool* assoc :show-mask (pos? %))}])]))
+        req @s/mask-req*]
+    (-> [:vbox {:key :mask :spacing 4}
+         [:separator {:key :rule}]]
+        (into (mask-picker lid (or (:mask-sel layer) :all) (when (= lid (:layer req)) (:sel req))))
+        (conj [:hbox {:key :mode :spacing 4}
+               [:label {:text "Brush" :weight 0 :reqwidth (px 52)}]
+               [:enum {:items ["Off" "Paint" "Erase"] :weight 1
+                       :value (case active :paint 1 :erase 2 0)
+                       :on-change #(act/set-tool! ([:pan :paint :erase] (long %)) lid)}]]
+              (when active (brush-sliders tool))
+              [:slider {:key :feather :label "Feather" :min 0 :max 200 :integer 1 :value (long (:feather layer))
+                        :on-change #(act/set-feather! lid (double %))}]
+              (mask-buttons lid)
+              (when active
+                [:checkbox {:key :show :label "Show mask" :value (if (:show-mask tool) 1 0)
+                            :on-change #(swap! s/tool* assoc :show-mask (pos? %))}])))))
 
 ;; ---- enhance ---------------------------------------------------------------------
 (defn- layer-status [doc layer sig job]
@@ -488,19 +497,22 @@
         (into (segment-items colour curve))
         (into (map-indexed (fn [i [px py]] (dot-item (+ 300 i) (sx px) (sy py))) pts)))))
 
+(defn- curve-press
+  "Grab the point near [cx cy], or add one there and grab that."
+  [pts cx cy hit put!]
+  (let [step (swap! curve-steps inc)]
+    (if-let [i (c/point-near pts cx cy hit)]
+      (reset! curve-drag {:i i :step step})
+      (let [[pts' i] (c/add-point pts cx cy)]
+        (reset! curve-drag {:i i :step step})
+        (put! pts' step)))))
+
 (defn- curve-handlers
   "Press adds or grabs a point, drag moves it, double-click removes it."
   [{:keys [doc layer ch pts]} {:keys [->x ->y hit]}]
   (let [put! (fn [pts' step] (act/set-curve! ch pts' step))
         current #(curve-points (or (d/layer-of @s/db* (:id doc) :curves) layer) ch)]
-    {:on-press (fn [x y]
-                 (let [cx (->x x) cy (->y y)
-                       step (swap! curve-steps inc)]
-                   (if-let [i (c/point-near pts cx cy hit)]
-                     (reset! curve-drag {:i i :step step})
-                     (let [[pts' i] (c/add-point pts cx cy)]
-                       (reset! curve-drag {:i i :step step})
-                       (put! pts' step)))))
+    {:on-press (fn [x y] (curve-press pts (->x x) (->y y) hit put!))
      :on-motion (fn [x y]
                   (when-let [{:keys [i step]} @curve-drag]
                     (let [cur (current)]
@@ -585,6 +597,12 @@
     (let [idx (d/layer-index db lid)]
       (layer-status doc layer (when idx (nth sigs idx)) (when (= lid stale-id) job)))))
 
+(defn- panel-status
+  "A processed filter's status line (live ones show their result instead)."
+  [ctx layer]
+  (when-not (d/live? layer)
+    [:label {:key :status :text (or (status-text ctx layer) "Off")}]))
+
 (defn- filter-panel
   [{:keys [db doc tool] :as ctx} kind open?]
   (let [layer (layer-or-defaults db doc kind)
@@ -594,8 +612,7 @@
      [:checkbox {:header true :label "" :value (if (:enabled layer) 1 0) :enabled (if doc 1 0)
                  :on-change #(act/set-enabled! kind (pos? %))}]
      [:vbox {:spacing 4 :enabled (if doc 1 0)}
-      (when-not (d/live? layer)
-        [:label {:key :status :text (or (status-text ctx layer) "Off")}])
+      (panel-status ctx layer)
       [:slider {:key :strength :label "Strength" :min 0 :max 100 :integer 1 :value (pct (:opacity layer))
                 :on-change #(act/set-layer! kind :opacity (/ (double %) 100.0))}]
       (settings ctx layer)
@@ -639,7 +656,7 @@
 
 (defn- lens-picker
   "The detected lens's candidates to choose from, or why there are none."
-  [exif lenses detected layer ok]
+  [exif {:keys [lenses] detected :lens} layer ok]
   (let [labels (mapv lens/label lenses)]
     (cond
       (seq labels) [:dropdown {:key :lens-pick :items labels :enabled ok
@@ -654,64 +671,78 @@
     (str (case (:method plan) :embedded "Camera's own correction. " :lensfun "Lensfun profile. " "")
          (or (status-text ctx layer) ""))))
 
+(def ^:private lens-options
+  [[:lens-dist "Distortion"] [:lens-tca "Chromatic aberration"] [:lens-vig "Vignetting"] [:lens-fill "Fill the frame"]])
+
+(defn- lens-checks [layer ok]
+  (for [[k label] lens-options]
+    [:checkbox {:key k :label label :value (if (get layer k) 1 0) :enabled ok
+                :on-change #(act/set-param! :lens k (pos? %))}]))
+
 (defn- lens-section [{:keys [db doc] :as ctx}]
   (let [layer (layer-or-defaults db doc :lens)
         exif (when doc (d/exif db (:id doc)))
-        {:keys [camera lenses] detected :lens} (when exif (lens/detect exif))
+        detection (when exif (lens/detect exif))
         photo (when (:w doc) (eng/lens-photo db doc))
-        ok (if doc 1 0)
-        check (fn [k label]
-                [:checkbox {:key k :label label :value (if (get layer k) 1 0) :enabled ok
-                            :on-change #(act/set-param! :lens k (pos? %))}])]
-    [:vbox {:key :lens :spacing 4}
-     [:hbox {:key :head :spacing 4}
-      [:checkbox {:label "Lens correction" :value (if (:enabled layer) 1 0) :enabled ok
-                  :on-change #(act/set-enabled! :lens (pos? %))}]]
-     [:label {:key :camera :text-color [1 1 1 0.7] :text (camera-text exif camera)}]
-     (when (some-> (:embedded photo) lens/sony-valid?) (lens-method-picker layer ok))
-     (lens-picker exif lenses detected layer ok)
-     (check :lens-dist "Distortion")
-     (check :lens-tca "Chromatic aberration")
-     (check :lens-vig "Vignetting")
-     (check :lens-fill "Fill the frame")
-     (when (:enabled layer)
-       (let [plan (when photo (eng/lens-plan db doc layer))]
-         [:label {:key :status :text-color [1 1 1 0.55] :text (lens-status ctx layer photo plan)}]))]))
+        ok (if doc 1 0)]
+    (-> [:vbox {:key :lens :spacing 4}
+         [:hbox {:key :head :spacing 4}
+          [:checkbox {:label "Lens correction" :value (if (:enabled layer) 1 0) :enabled ok
+                      :on-change #(act/set-enabled! :lens (pos? %))}]]
+         [:label {:key :camera :text-color [1 1 1 0.7] :text (camera-text exif (:camera detection))}]
+         (when (some-> (:embedded photo) lens/sony-valid?) (lens-method-picker layer ok))
+         (lens-picker exif detection layer ok)]
+        (into (lens-checks layer ok))
+        (conj (when (:enabled layer)
+                (let [plan (when photo (eng/lens-plan db doc layer))]
+                  [:label {:key :status :text-color [1 1 1 0.55] :text (lens-status ctx layer photo plan)}]))))))
+
+(defn- orientation-buttons [ok]
+  [:hbox {:spacing 4}
+   [:button {:icon "LOOP_BACK" :text "Rotate left" :enabled ok :on-click #(act/rotate! -1)}]
+   [:button {:icon "LOOP_FORWARDS" :text "Rotate right" :enabled ok :on-click #(act/rotate! 1)}]])
+
+(defn- flip-buttons [ok]
+  [:hbox {:spacing 4}
+   [:button {:text "Flip horizontal" :enabled ok :on-click act/flip-h!}]
+   [:button {:text "Flip vertical" :enabled ok :on-click act/flip-v!}]])
+
+(defn- crop-inputs
+  "The custom crop's size (px) or ratio, for the constraints that take one."
+  [doc ok]
+  (case (:constrain doc)
+    :custom-size
+    (let [[dw dh] (when (:w doc) (g/display-size doc false))
+          [bw bh] (when (:w doc) (g/display-size doc true))]
+      [:hbox {:spacing 4}
+       [:number {:label "W" :min g/min-crop :max (or bw 100000) :integer 1 :value (or dw 0) :enabled ok
+                 :on-change #(act/set-crop-size! % dh)}]
+       [:number {:label "H" :min g/min-crop :max (or bh 100000) :integer 1 :value (or dh 0) :enabled ok
+                 :on-change #(act/set-crop-size! dw %)}]])
+    :custom-ratio
+    [:hbox {:spacing 4}
+     [:number {:label "W" :min 0.1 :max 100 :precision 2 :value (:ratio-w doc) :enabled ok
+               :on-change #(act/set-ratio! % (:ratio-h doc))}]
+     [:number {:label "H" :min 0.1 :max 100 :precision 2 :value (:ratio-h doc) :enabled ok
+               :on-change #(act/set-ratio! (:ratio-w doc) %)}]]
+    nil))
 
 (defn dimensions-page []
   (let [doc (s/current-doc)
         ok (if (:base doc) 1 0)
         [dw dh] (when (:w doc) (g/display-size doc false))
-        [bw bh] (when (:w doc) (g/display-size doc true))
         ci (or (first (keep-indexed (fn [i x] (when (= (:key x) (:constrain doc)) i)) g/constraints)) 0)]
     [:vbox {:spacing 6 :padding 4}
      [lens-section (panels-ctx)]
      [:separator]
      [:label {:text "Orientation" :bold 1}]
-     [:hbox {:spacing 4}
-      [:button {:icon "LOOP_BACK" :text "Rotate left" :enabled ok :on-click #(act/rotate! -1)}]
-      [:button {:icon "LOOP_FORWARDS" :text "Rotate right" :enabled ok :on-click #(act/rotate! 1)}]]
-     [:hbox {:spacing 4}
-      [:button {:text "Flip horizontal" :enabled ok :on-click act/flip-h!}]
-      [:button {:text "Flip vertical" :enabled ok :on-click act/flip-v!}]]
+     (orientation-buttons ok)
+     (flip-buttons ok)
      [:separator]
      [:label {:text "Crop" :bold 1}]
      [:dropdown {:items (mapv :label g/constraints) :value ci :enabled ok
                  :on-change #(act/set-constrain! (:key (nth g/constraints (long %))))}]
-     (case (:constrain doc)
-       :custom-size
-       [:hbox {:spacing 4}
-        [:number {:label "W" :min g/min-crop :max (or bw 100000) :integer 1 :value (or dw 0) :enabled ok
-                  :on-change #(act/set-crop-size! % dh)}]
-        [:number {:label "H" :min g/min-crop :max (or bh 100000) :integer 1 :value (or dh 0) :enabled ok
-                  :on-change #(act/set-crop-size! dw %)}]]
-       :custom-ratio
-       [:hbox {:spacing 4}
-        [:number {:label "W" :min 0.1 :max 100 :precision 2 :value (:ratio-w doc) :enabled ok
-                  :on-change #(act/set-ratio! % (:ratio-h doc))}]
-        [:number {:label "H" :min 0.1 :max 100 :precision 2 :value (:ratio-h doc) :enabled ok
-                  :on-change #(act/set-ratio! (:ratio-w doc) %)}]]
-       nil)
+     (crop-inputs doc ok)
      (when dw [:label {:text (str "Result: " dw " × " dh " px")}])
      [:button {:text "Reset crop" :enabled (if (and (:base doc) (g/cropped? doc)) 1 0) :on-click act/reset-crop!}]
      [:label {:text "Drag the frame or its handles on the image." :text-color [1 1 1 0.55]}]]))
