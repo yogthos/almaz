@@ -37,7 +37,8 @@
 (defn have? [cmd] (zero? (:exit (p/shell {:out :string :err :string :continue true} "sh" "-c" (str "command -v " cmd)))))
 
 (def here (str (.getParent (java.io.File. *file*))))
-(def version (:version (clojure.edn/read-string (slurp (str here "/version.edn")))))
+(load-file (str here "/../../src/almaz/version.clj"))
+(def version almaz.version/version)
 
 (def arch (case (str/trim (sh* "uname" "-m"))
             ("x86_64" "amd64") "x86_64"

@@ -21,7 +21,8 @@
          '[jolt.process :as p])
 
 (def here (str (.getParent (java.io.File. *file*))))
-(def version (:version (clojure.edn/read-string (slurp (str here "/version.edn")))))
+(load-file (str here "/../../src/almaz/version.clj"))
+(def version almaz.version/version)
 (def app "target/Almaz.app")
 (def contents (str app "/Contents"))
 (def frameworks (str contents "/Frameworks"))
