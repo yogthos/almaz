@@ -54,8 +54,6 @@
 
  ;; dev/debug entry points under test/ — only the app itself ships from src/.
  :aliases {:run   {:main-opts ["-m" "almaz.core"]}
-           ;; CI's jolt-metrics gate: jolt -M:metrics report.json [--update]
-           :metrics {:extra-paths ["test"] :main-opts ["-m" "almaz.metrics-gate"]}
            :check {:extra-paths ["test"] :main-opts ["-m" "almaz.check"]}
            :test  {:extra-paths ["test"] :main-opts ["-m" "almaz.test-runner"]}}
 

@@ -42,9 +42,15 @@ jobs:
       - name: ONNX Runtime
         run: |
           mkdir -p ~/deps
-          if [ ! -d ~/deps/onnxruntime ]; then
-            curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" | tar xz -C ~/deps
-            mv ~/deps/onnxruntime-linux-x64-${ORT_VERSION} ~/deps/onnxruntime
+          if [ ! -f ~/deps/onnxruntime/lib/libonnxruntime.so ]; then
+            # Microsoft's NuGet package: the same C library and headers as the
+            # GitHub release tarball (github.com/microsoft/onnxruntime 404s)
+            curl -fsSL -o /tmp/ort.nupkg "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ORT_VERSION}/microsoft.ml.onnxruntime.${ORT_VERSION}.nupkg"
+            rm -rf /tmp/ort && mkdir -p /tmp/ort ~/deps/onnxruntime/lib
+            unzip -q /tmp/ort.nupkg 'build/native/include/*' 'runtimes/linux-x64/native/*' -d /tmp/ort
+            mv /tmp/ort/build/native/include ~/deps/onnxruntime/include
+            mv /tmp/ort/runtimes/linux-x64/native/* ~/deps/onnxruntime/lib/
+            ln -sf libonnxruntime.so ~/deps/onnxruntime/lib/libonnxruntime.so.1
           fi
 
       - name: LibRaw
@@ -110,19 +116,13 @@ jobs:
           curl -fsSL "https://github.com/jlt-commons/jolt-metrics/releases/download/${JOLT_METRICS_VERSION}/jolt-metrics-${JOLT_METRICS_VERSION}-x86_64-linux.tar.gz" | tar xz -C "$HOME"
           echo "$HOME/jolt-metrics-${JOLT_METRICS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
 
-      - name: Cache jolt deps
-        uses: actions/cache@v4
-        with:
-          path: ~/.jolt/gitlibs
-          key: metrics-${{ env.JOLT_VERSION }}-${{ hashFiles('deps.edn') }}
-
       - name: Report
         run: |
           jolt-metrics . metrics.json --no-git
           jolt-metrics . metrics.md --no-git
 
       - name: Gate
-        run: jolt -M:metrics metrics.json
+        run: native/tools/metrics_gate.sh metrics.json
 
       - name: Upload report
         if: always()

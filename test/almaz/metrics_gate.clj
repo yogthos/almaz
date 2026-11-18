@@ -4,14 +4,16 @@
    (.jolt-metrics-baseline.edn) doesn't list. Fixed issues must leave the
    baseline too, so they can't come back unnoticed.
 
-     jolt -M:metrics report.json            check
-     jolt -M:metrics report.json --update   rewrite the baseline from the report"
+     native/tools/metrics_gate.sh report.json            check
+     native/tools/metrics_gate.sh report.json --update   rewrite the baseline
+
+   (The script runs this outside the project, so jolt doesn't load the app's
+   native libraries for it.)"
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.pprint :refer [pprint]]
             [clojure.string :as str]))
 
-(def baseline-file ".jolt-metrics-baseline.edn")
 
 (defn- violations [{:keys [path name violations]}]
   (for [{:keys [rule]} violations] [:violation path name rule]))
@@ -48,20 +50,23 @@
 
 (defn- report-of [path] (json/read-str (slurp path) :key-fn keyword))
 
-(defn- print-failures [{:keys [critical new stale]}]
+(defn- print-failures [{:keys [critical new stale]} baseline-file]
   (doseq [c critical] (println "critical:" c))
   (doseq [i new] (println "new:" (str/join " " (rest i))))
   (doseq [i stale] (println "fixed, remove from the baseline:" (str/join " " (rest i))))
-  (println (str "\nFix the new findings, or run `jolt -M:metrics <report.json> --update` to accept them "
-                "(and drop fixed ones) in " baseline-file ".")))
+  (println (str "\nFix the new findings, or run `native/tools/metrics_gate.sh <report.json> --update` "
+                "to accept them (and drop fixed ones) in " baseline-file ".")))
 
-(defn -main [report-path & args]
-  (let [report (report-of report-path)]
+(defn -main
+  "report.json [--baseline FILE] [--update]"
+  [report-path & args]
+  (let [report (report-of report-path)
+        baseline-file (or (second (drop-while #(not= "--baseline" %) args)) ".jolt-metrics-baseline.edn")]
     (if (some #{"--update"} args)
       (do (spit baseline-file (with-out-str (pprint (vec (sort (issues report))))))
           (println "wrote" baseline-file))
       (let [result (check report (edn/read-string (slurp baseline-file)))]
         (if (passed? result)
           (println "metrics gate: ok," (count (issues report)) "known issues, no new ones")
-          (do (print-failures result)
+          (do (print-failures result baseline-file)
               (System/exit 1)))))))
