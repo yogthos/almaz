@@ -17,13 +17,18 @@
 (defonce ^:private pending (atom {})) ; layer id -> [kind settings] to build
 (defonce ^:private wake (LinkedBlockingQueue.))
 
+(defn- build-one!
+  "Build layer `lid`'s pending table (unless newer settings replaced it
+   meanwhile, they stay pending) and redraw with it."
+  [lid [kind p :as req]]
+  (swap! pending (fn [m] (if (= req (get m lid)) (dissoc m lid) m)))
+  (swap! shown assoc lid (c/table kind p))
+  (ui/on-gui s/bump-pixels!))
+
 (defn- build-pending! []
   (loop []
-    (when-let [[lid [kind p]] (first @pending)]
-      (swap! pending (fn [m] (if (= [kind p] (get m lid)) (dissoc m lid) m)))
-      (let [t (c/table kind p)]
-        (swap! shown assoc lid t)
-        (ui/on-gui s/bump-pixels!))
+    (when-let [[lid req] (first @pending)]
+      (build-one! lid req)
       (recur))))
 
 (defonce ^:private builder

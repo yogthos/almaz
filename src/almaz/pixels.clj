@@ -261,19 +261,22 @@
            (ffi/copy p (+ p (* 8 tone-n)) (* 4 tone-n))
            p)))
 
+(defn- or-null [p] (or p ffi/null))
+
 (defn- layer-struct
   "One layer's AlmzLayer fields, its tables written into `arena`."
   [arena {:keys [img mask opacity enabled tone cube radial] :as l}]
   (let [lut (curve-table arena l)
         cube-p (when cube (floats arena (:data cube)))
-        sat (float (get tone :saturation 0.0))]
-    {:img (or img ffi/null) :mask (or mask ffi/null)
+        sat (float (get tone :saturation 0.0))
+        does-something? (or img lut cube-p (not (zero? sat)))]
+    {:img (or-null img) :mask (or-null mask)
      :opacity (float (or opacity 1.0))
-     :enabled (if (and enabled (or img lut cube-p (not (zero? sat)))) 1 0)
-     :lut (or lut ffi/null)
+     :enabled (if (and enabled does-something?) 1 0)
+     :lut (or-null lut)
      :saturation sat
      :cube-n (int (if cube-p (:n cube) 0))
-     :cube (or cube-p ffi/null)
+     :cube (or-null cube-p)
      :radial (mapv float (or radial [0 0 0 0 0 0]))}))
 
 (defn- write-layers
