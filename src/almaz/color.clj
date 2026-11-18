@@ -540,18 +540,28 @@
   [kind p]
   (get (:tables @cache) (table-key kind p) ::none))
 
+(defn- remember [{:keys [order tables]} key t]
+  (let [order (conj order key)
+        [drop keep] (split-at (max 0 (- (count order) cache-size)) order)]
+    {:order (vec keep) :tables (apply dissoc (assoc tables key t) drop)}))
+
+;; One build at a time: a build already spreads over build-threads, so the UI's
+;; builder, thumbnails and exports building at once only fight for the cores,
+;; and asking twice for the same settings would build them twice.
+(defonce ^:private build-lock (Object.))
+
 (defn table
   "What the engine draws kind `kind` with: {:cube {:n :data}} or {:curves},
    or nil when the settings change nothing. Cached by settings (slider drags
    revisit them, and every render asks)."
   [kind p]
   (let [key (table-key kind p)
-        {:keys [tables]} @cache]
-    (if (contains? tables key)
-      (tables key)
-      (let [t (build-table kind (second key))]
-        (swap! cache (fn [{:keys [order tables]}]
-                       (let [order (conj order key)
-                             [drop keep] (split-at (max 0 (- (count order) cache-size)) order)]
-                         {:order (vec keep) :tables (apply dissoc (assoc tables key t) drop)})))
-        t))))
+        hit #(find (:tables @cache) key)]
+    (if-let [[_ t] (hit)]
+      t
+      (locking build-lock
+        (if-let [[_ t] (hit)]
+          t
+          (let [t (build-table kind (second key))]
+            (swap! cache remember key t)
+            t))))))
