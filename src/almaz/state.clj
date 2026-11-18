@@ -92,23 +92,23 @@
   [id f & args]
   (swap! db* (fn [db] (if (d/layer db id) (apply d/update-layer db id f args) db))))
 
+(defn- stamped-edit! [id edited-at f args]
+  (swap! db* (fn [db] (if (d/doc db id)
+                        (d/update-doc (apply f db args) id assoc :edited-at edited-at)
+                        db)))
+  (wake!))
+
 (defn edit!
   "A user edit to doc `id` (`f` is db -> db): apply it, stamp the edit time
    (processing waits for edits to settle) and wake the worker."
   [id f & args]
-  (swap! db* (fn [db] (if (d/doc db id)
-                        (d/update-doc (apply f db args) id assoc :edited-at (now))
-                        db)))
-  (wake!))
+  (stamped-edit! id (now) f args))
 
 (defn edit-done!
   "edit!, for an edit that's complete in itself (a finished brush stroke):
    nothing more is coming, so processing needn't wait for it to settle."
   [id f & args]
-  (swap! db* (fn [db] (if (d/doc db id)
-                        (d/update-doc (apply f db args) id assoc :edited-at 0)
-                        db)))
-  (wake!))
+  (stamped-edit! id 0 f args))
 
 (defn bump-pixels! [] (swap! pixels-rev* inc))
 

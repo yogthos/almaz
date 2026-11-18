@@ -99,3 +99,38 @@
       (let [msg (ffi/ptr->string ep)]
         (free-string-fn ep)
         msg))))
+
+(defn call-checked
+  "(f errslot) with a fresh error out-param in arena `ar`. When (failed? r),
+   throw the shim's message (freed with `free-string-fn`) or `fallback`."
+  [ar f failed? free-string-fn fallback data]
+  (let [errslot (ffi/alloc ar :pointer)]
+    (ffi/write errslot :pointer ffi/null 0)
+    (let [r (f errslot)]
+      (if (failed? r)
+        (throw (ex-info (or (read-and-free-error errslot free-string-fn) fallback) data))
+        r))))
+
+(defn run-predict
+  "A backend's run-session: marshal `tensors` (by input name) in, call
+   (predict handle n-in in-arr n-out out-arr errslot), read outputs back.
+   `shim` is {:free-string f :backend kw}."
+  [predict {:keys [free-string backend]} handle ins outs tensors]
+  (let [in-entries (mapv (fn [n] (select-keys (tensors n) [:name :shape :data])) ins)
+        out-count (count (:data (tensors (first ins))))]  ; v1: same-size I/O
+    (with-open [ar (ffi/confined-arena)]
+      (let [in-arr (write-tensor-array! ar in-entries)
+            out-arr (alloc-output-array! ar outs out-count)]
+        (call-checked ar #(predict handle (count ins) in-arr (count outs) out-arr %)
+                      (complement zero?) free-string (str (name backend) " predict failed") {:backend backend})
+        (read-output-array! out-arr outs)))))
+
+(defn run-native
+  "A backend's run-native: caller-owned buffers in and out, nothing copied."
+  [predict {:keys [free-string backend]} handle inputs outputs]
+  (with-open [ar (ffi/confined-arena)]
+    (let [in-arr (native-tensor-array! ar inputs)
+          out-arr (native-tensor-array! ar outputs)]
+      (call-checked ar #(predict handle (count inputs) in-arr (count outputs) out-arr %)
+                    (complement zero?) free-string "predict failed" {:backend backend})
+      nil)))

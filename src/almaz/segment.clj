@@ -85,8 +85,3 @@
   (let [{:keys [channel invert?]} (source sel)]
     (px/mask-set! m (+ ptr (* 4 channel n n)) n n logits?)
     (when invert? (px/mask-invert! m))))
-
-(defn forget!
-  "Drop every kept output (their native memory)."
-  []
-  (doseq [{:keys [ptr]} (vals (first (reset-vals! results {})))] (when ptr (ffi/free ptr))))

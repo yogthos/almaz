@@ -337,6 +337,59 @@
      (setting :balance layer (k :sat) "Saturation" [[:bal :sat] #(lerp-rgb [0.45 0.45 0.45] [0.85 0.25 0.2] %)])
      (setting :balance layer (k :bri) "Brightness" [[:bal :bri] #(lerp-rgb [0.15 0.15 0.15] [0.85 0.85 0.85] %)])]))
 
+;; ---- graphs (levels, curves) ----------------------------------------------------
+(def ^:private channel-colours {:r [1 0.45 0.45 1] :g [0.45 1 0.5 1] :b [0.5 0.65 1 1]})
+
+(defn- graph-frame
+  "A graph's mapping between curve space (0..1) and a w x h canvas inset by pad."
+  [[w h] pad]
+  (let [iw (- w (* 2 pad)) ih (- h (* 2 pad))]
+    {:w w :h h :pad pad
+     :sx (fn [v] (+ pad (* v iw))) :sy (fn [v] (+ pad (* (- 1 v) ih)))
+     :->x (fn [x] (/ (- x pad) (double iw))) :->y (fn [y] (- 1.0 (/ (- y pad) (double ih))))
+     :->value (fn [x] (/ (- x pad) (double iw)))
+     :hit (/ 9.0 (max 1.0 (min iw ih)))}))
+
+(defn- histogram-shape
+  "Channel `ch`'s histogram as one filled polygon, or nil: square-rooted
+   counts (darktable draws levels' log-ish too, so small tones stay visible),
+   scaled ignoring the clipped end bins."
+  [{:keys [sx sy]} hist ch]
+  (when-let [bins (when hist (get hist (case ch :r :r :g :g :b :b :l)))]
+    (let [top (max 1.0 (Math/sqrt (double (apply max (subvec bins 1 255)))))]
+      (vec (concat [(sx 0) (sy 0)]
+                   (mapcat (fn [i] [(sx (/ (+ i 0.5) 256.0))
+                                    (sy (min 1.0 (/ (Math/sqrt (double (nth bins i))) top)))])
+                           (range 256))
+                   [(sx 1) (sy 0)])))))
+
+(defn- cached-histogram
+  "256-bin histograms of what a graph's layer receives (the stack below it,
+   within the crop), kept in `data` by what they depend on."
+  [data doc rs rev]
+  (let [k [(:id doc) (:base doc) rs (g/crop-rect doc) rev]]
+    (when (and (:base doc) (not= k (:key @data)))
+      (reset! data {:key k :hist (px/histogram (:base doc) rs (g/crop-rect doc))}))
+    (:hist @data)))
+
+(defn- dot-item [id x y]
+  {:id id :type :oval :coords [(- x 5) (- y 5) (+ x 5) (+ y 5)]
+   :fill [0.85 0.85 0.85 1] :outline [0 0 0 0.7] :width 1})
+
+(defn- segment-items
+  "A polyline as line items from id 100 (a line item draws only its first segment)."
+  [colour pts]
+  (map-indexed (fn [i [[x0 y0] [x1 y1]]]
+                 {:id (+ 100 i) :type :line :coords [x0 y0 x1 y1] :fill colour :width 1.5})
+               (partition 2 1 pts)))
+
+(defn- graph-base-items
+  "The graph's backdrop and its histogram (alpha `a`)."
+  [{:keys [pad w h]} shape colour a]
+  (cond-> [{:id 1 :type :rect :coords [pad pad (- w pad) (- h pad)] :fill [0.12 0.12 0.12 1]
+            :outline [1 1 1 0.15] :width 1}]
+    shape (conj {:id 2 :type :polygon :coords shape :fill (assoc colour 3 a) :width 0})))
+
 ;; levels: a curve over the histogram of what levels receives, with handles
 ;; for the black, grey and white points of the chosen channel
 (defonce ^:private channel* (r/atom :rgb))
@@ -349,61 +402,37 @@
 (defonce ^:private levels-data (atom {:key nil :hist nil}))
 (defonce ^:private levels-size (r/atom [300 150]))
 
-(defn- levels-histogram
-  "256-bin histograms of what levels receives (the stack below it, within
-   the crop), cached by what they depend on."
-  [doc rs rev]
-  (let [k [(:id doc) (:base doc) rs (g/crop-rect doc) rev]]
-    (when (and (:base doc) (not= k (:key @levels-data)))
-      (reset! levels-data {:key k :hist (px/histogram (:base doc) rs (g/crop-rect doc))}))
-    (:hist @levels-data)))
+
+(defn- levels-items [{:keys [sx sy pad h] :as frame} [b gr wt] colour shape]
+  (let [pts (mapv (fn [i] (let [x (/ i 64.0)] [(sx x) (sy (c/level b gr wt x))])) (range 65))]
+    (-> (graph-base-items frame shape colour 0.28)
+        (into (for [i [1 2 3]]
+                {:id (+ 10 i) :type :line :coords [(sx (/ i 4.0)) pad (sx (/ i 4.0)) (- h pad)]
+                 :fill [1 1 1 0.1] :width 1}))
+        (into (segment-items colour pts))
+        (conj (dot-item 21 (sx b) (sy 0)) (dot-item 22 (sx gr) (sy 0.5)) (dot-item 23 (sx wt) (sy 1))))))
+
+(defn- levels-handlers
+  "Press grabs the nearest of the black, grey and white handles; drag moves it."
+  [ch [b gr wt] {:keys [sx sy ->value]}]
+  {:on-press (fn [x y]
+               (let [hs [[:black (sx b) (sy 0)] [:grey (sx gr) (sy 0.5)] [:white (sx wt) (sy 1)]]
+                     [which] (first (sort-by (fn [[_ hx hy]] (Math/hypot (- x hx) (- y hy))) hs))]
+                 (reset! levels-drag which)
+                 (act/set-level! ch which (->value x))))
+   :on-motion (fn [x _] (when-let [which @levels-drag] (act/set-level! ch which (->value x))))
+   :on-release (fn [_ _] (reset! levels-drag nil))})
 
 (defn- levels-graph [doc layer]
   (let [ch @channel*
-        [w h] @levels-size
-        rs (when (:base doc) (refs doc :levels))
-        hist (when (:base doc) (levels-histogram doc rs @s/pixels-rev*))
-        [b gr wt] (levels-points layer ch)
-        pad levels-pad
-        iw (- w (* 2 pad)) ih (- h (* 2 pad))
-        sx (fn [v] (+ pad (* v iw))) sy (fn [v] (+ pad (* (- 1 v) ih)))
-        pts (mapv (fn [i] (let [x (/ i 64.0)] [(sx x) (sy (c/level b gr wt x))])) (range 65))
-        colour (case ch :r [1 0.45 0.45 1] :g [0.45 1 0.5 1] :b [0.5 0.65 1 1] [0.9 0.9 0.9 1])
-        dot (fn [id x y] {:id id :type :oval :coords [(- x 5) (- y 5) (+ x 5) (+ y 5)]
-                          :fill [0.85 0.85 0.85 1] :outline [0 0 0 0.7] :width 1})
-        ->value (fn [x] (/ (- x pad) (double iw)))
-        ;; the histogram as one filled shape, square-rooted counts (darktable
-        ;; draws levels' log-ish too, so small tones stay visible), ignoring the
-        ;; clipped end bins when scaling
-        bins (when hist (get hist (case ch :r :r :g :g :b :b :l)))
-        top (when bins (max 1.0 (Math/sqrt (double (apply max (subvec bins 1 255))))))
-        shape (when bins
-                (vec (concat [(sx 0) (sy 0)]
-                             (mapcat (fn [i] [(sx (/ (+ i 0.5) 256.0))
-                                              (sy (min 1.0 (/ (Math/sqrt (double (nth bins i))) top)))])
-                                     (range 256))
-                             [(sx 1) (sy 0)])))]
-    [:canvas {:height-units 8 :events 1
-              :on-configure (fn [cw chh] (let [v [(long cw) (long chh)]] (when (not= v @levels-size) (reset! levels-size v))))
-              :on-press (fn [x y]
-                          (let [hs [[:black (sx b) (sy 0)] [:grey (sx gr) (sy 0.5)] [:white (sx wt) (sy 1)]]
-                                [which] (first (sort-by (fn [[_ hx hy]] (Math/hypot (- x hx) (- y hy))) hs))]
-                            (reset! levels-drag which)
-                            (act/set-level! ch which (->value x))))
-              :on-motion (fn [x _] (when-let [which @levels-drag] (act/set-level! ch which (->value x))))
-              :on-release (fn [_ _] (reset! levels-drag nil))
-              :canvas-items
-              (cond-> [{:id 1 :type :rect :coords [pad pad (- w pad) (- h pad)] :fill [0.12 0.12 0.12 1]
-                        :outline [1 1 1 0.15] :width 1}]
-                shape (conj {:id 2 :type :polygon :coords shape :fill (assoc colour 3 0.28) :width 0})
-                true (into (for [i [1 2 3]]
-                             {:id (+ 10 i) :type :line :coords [(sx (/ i 4.0)) pad (sx (/ i 4.0)) (- h pad)]
-                              :fill [1 1 1 0.1] :width 1}))
-                ;; the curve as segments (a line item draws only its first one)
-                true (into (map-indexed (fn [i [[x0 y0] [x1 y1]]]
-                                          {:id (+ 100 i) :type :line :coords [x0 y0 x1 y1] :fill colour :width 1.5})
-                                        (partition 2 1 pts)))
-                true (conj (dot 21 (sx b) (sy 0)) (dot 22 (sx gr) (sy 0.5)) (dot 23 (sx wt) (sy 1))))}]))
+        frame (graph-frame @levels-size levels-pad)
+        hist (when (:base doc) (cached-histogram levels-data doc (refs doc :levels) @s/pixels-rev*))
+        bgw (levels-points layer ch)
+        colour (get channel-colours ch [0.9 0.9 0.9 1])]
+    [:canvas (merge {:height-units 8 :events 1
+                     :on-configure (fn [cw chh] (let [v [(long cw) (long chh)]] (when (not= v @levels-size) (reset! levels-size v))))
+                     :canvas-items (levels-items frame bgw colour (histogram-shape frame hist ch))}
+                    (levels-handlers ch bgw frame))]))
 
 (defn- levels-settings [doc layer tool]
   (let [ch @channel*
@@ -440,76 +469,61 @@
 (def ^:private curve-pad 8)
 (def ^:private curve-labels ["Luminance" "RGB" "Red" "Green" "Blue"])
 
-(defn- curve-histogram [doc rs rev]
-  (let [k [(:id doc) (:base doc) rs (g/crop-rect doc) rev]]
-    (when (and (:base doc) (not= k (:key @curve-data)))
-      (reset! curve-data {:key k :hist (px/histogram (:base doc) rs (g/crop-rect doc))}))
-    (:hist @curve-data)))
 
 (defn- curve-points [layer ch] (c/parse-points (get layer (c/cv-key ch))))
 
+(defn- grid-items [{:keys [sx sy pad w h]}]
+  (for [i [1 2 3] [k coords] [[0 [(sx (/ i 4.0)) pad (sx (/ i 4.0)) (- h pad)]]
+                              [1 [pad (sy (/ i 4.0)) (- w pad) (sy (/ i 4.0))]]]]
+    {:id (+ 10 (* 2 i) k) :type :line :coords coords :fill [1 1 1 0.1] :width 1}))
+
+(defn- curve-items
+  "The graph's canvas items: frame, histogram, grid, diagonal, curve, points."
+  [{:keys [sx sy] :as frame} {:keys [f pts colour shape]}]
+  (let [curve (mapv (fn [i] (let [x (/ i 96.0)] [(sx x) (sy (f x))])) (range 97))]
+    (-> (graph-base-items frame shape colour 0.22)
+        (into (grid-items frame))
+        ;; the straight line, faint, to compare against
+        (conj {:id 30 :type :line :coords [(sx 0) (sy 0) (sx 1) (sy 1)] :fill [1 1 1 0.12] :width 1})
+        (into (segment-items colour curve))
+        (into (map-indexed (fn [i [px py]] (dot-item (+ 300 i) (sx px) (sy py))) pts)))))
+
+(defn- curve-handlers
+  "Press adds or grabs a point, drag moves it, double-click removes it."
+  [{:keys [doc layer ch pts]} {:keys [->x ->y hit]}]
+  (let [put! (fn [pts' step] (act/set-curve! ch pts' step))
+        current #(curve-points (or (d/layer-of @s/db* (:id doc) :curves) layer) ch)]
+    {:on-press (fn [x y]
+                 (let [cx (->x x) cy (->y y)
+                       step (swap! curve-steps inc)]
+                   (if-let [i (c/point-near pts cx cy hit)]
+                     (reset! curve-drag {:i i :step step})
+                     (let [[pts' i] (c/add-point pts cx cy)]
+                       (reset! curve-drag {:i i :step step})
+                       (put! pts' step)))))
+     :on-motion (fn [x y]
+                  (when-let [{:keys [i step]} @curve-drag]
+                    (let [cur (current)]
+                      (when (< i (count cur))
+                        (put! (c/move-point cur i (->x x) (->y y)) step)))))
+     :on-release (fn [_ _] (reset! curve-drag nil))
+     :on-double (fn [x y]
+                  (reset! curve-drag nil)
+                  (let [cur (current)]
+                    (when-let [i (c/point-near cur (->x x) (->y y) hit)]
+                      (put! (c/remove-point cur i) nil))))}))
+
 (defn- curves-graph [doc layer]
   (let [ch @curve-ch*
-        [w h] @curve-size
+        frame (graph-frame @curve-size curve-pad)
         pts (curve-points layer ch)
-        f (c/curve-fn pts)
-        rs (when (:base doc) (refs doc :curves))
-        hist (when (:base doc) (curve-histogram doc rs @s/pixels-rev*))
-        pad curve-pad
-        iw (- w (* 2 pad)) ih (- h (* 2 pad))
-        sx (fn [v] (+ pad (* v iw))) sy (fn [v] (+ pad (* (- 1 v) ih)))
-        ->x (fn [x] (/ (- x pad) (double iw))) ->y (fn [y] (- 1.0 (/ (- y pad) (double ih))))
-        hit (/ 9.0 (max 1.0 (min iw ih)))
-        colour (case ch :r [1 0.45 0.45 1] :g [0.45 1 0.5 1] :b [0.5 0.65 1 1] [0.9 0.9 0.9 1])
-        curve (mapv (fn [i] (let [x (/ i 96.0)] [(sx x) (sy (f x))])) (range 97))
-        bins (when hist (get hist (case ch :r :r :g :g :b :b :l)))
-        top (when bins (max 1.0 (Math/sqrt (double (apply max (subvec bins 1 255))))))
-        shape (when bins
-                (vec (concat [(sx 0) (sy 0)]
-                             (mapcat (fn [i] [(sx (/ (+ i 0.5) 256.0))
-                                              (sy (min 1.0 (/ (Math/sqrt (double (nth bins i))) top)))])
-                                     (range 256))
-                             [(sx 1) (sy 0)])))
-        put! (fn [pts' step] (act/set-curve! ch pts' step))]
-    [:canvas {:reqheight (px 270) :events 1
-              :on-configure (fn [cw chh] (let [v [(long cw) (long chh)]] (when (not= v @curve-size) (reset! curve-size v))))
-              :on-press (fn [x y]
-                          (let [cx (->x x) cy (->y y)
-                                step (swap! curve-steps inc)]
-                            (if-let [i (c/point-near pts cx cy hit)]
-                              (reset! curve-drag {:i i :step step})
-                              (let [[pts' i] (c/add-point pts cx cy)]
-                                (reset! curve-drag {:i i :step step})
-                                (put! pts' step)))))
-              :on-motion (fn [x y]
-                           (when-let [{:keys [i step]} @curve-drag]
-                             (let [cur (curve-points (or (d/layer-of @s/db* (:id doc) :curves) layer) ch)]
-                               (when (< i (count cur))
-                                 (put! (c/move-point cur i (->x x) (->y y)) step)))))
-              :on-release (fn [_ _] (reset! curve-drag nil))
-              :on-double (fn [x y]
-                           (reset! curve-drag nil)
-                           (let [cur (curve-points (or (d/layer-of @s/db* (:id doc) :curves) layer) ch)]
-                             (when-let [i (c/point-near cur (->x x) (->y y) hit)]
-                               (put! (c/remove-point cur i) nil))))
-              :canvas-items
-              (cond-> [{:id 1 :type :rect :coords [pad pad (- w pad) (- h pad)] :fill [0.12 0.12 0.12 1]
-                        :outline [1 1 1 0.15] :width 1}]
-                shape (conj {:id 2 :type :polygon :coords shape :fill (assoc colour 3 0.22) :width 0})
-                true (into (for [i [1 2 3] [k coords] [[0 [(sx (/ i 4.0)) pad (sx (/ i 4.0)) (- h pad)]]
-                                                        [1 [pad (sy (/ i 4.0)) (- w pad) (sy (/ i 4.0))]]]]
-                             {:id (+ 10 (* 2 i) k) :type :line :coords coords :fill [1 1 1 0.1] :width 1}))
-                ;; the straight line, faint, to compare against
-                true (conj {:id 30 :type :line :coords [(sx 0) (sy 0) (sx 1) (sy 1)] :fill [1 1 1 0.12] :width 1})
-                ;; the curve as segments (a line item draws only its first one)
-                true (into (map-indexed (fn [i [[x0 y0] [x1 y1]]]
-                                          {:id (+ 100 i) :type :line :coords [x0 y0 x1 y1] :fill colour :width 1.5})
-                                        (partition 2 1 curve)))
-                true (into (map-indexed (fn [i [px py]]
-                                          (let [x (sx px) y (sy py)]
-                                            {:id (+ 300 i) :type :oval :coords [(- x 5) (- y 5) (+ x 5) (+ y 5)]
-                                             :fill [0.85 0.85 0.85 1] :outline [0 0 0 0.7] :width 1}))
-                                        pts)))}]))
+        hist (when (:base doc) (cached-histogram curve-data doc (refs doc :curves) @s/pixels-rev*))
+        colour (get channel-colours ch [0.9 0.9 0.9 1])]
+    [:canvas (merge {:reqheight (px 270) :events 1
+                     :on-configure (fn [cw chh] (let [v [(long cw) (long chh)]] (when (not= v @curve-size) (reset! curve-size v))))
+                     :canvas-items (curve-items frame {:f (c/curve-fn pts) :pts pts :colour colour
+                                                       :shape (histogram-shape frame hist ch)})}
+                    (curve-handlers {:doc doc :layer layer :ch ch :pts pts} frame))]))
 
 (defn- curves-settings [doc layer tool]
   (let [ch @curve-ch*
@@ -549,34 +563,42 @@
   (or (when doc (d/layer-of db (:id doc) kind))
       (merge (get-in d/kinds [kind :params]) {:kind kind :enabled false :opacity (d/default-opacity kind)})))
 
+(def ^:private kind-settings
+  "Each filter kind's settings body: (fn [ctx layer])."
+  {:denoise (fn [_ layer] (denoise-settings layer))
+   :sharpen (fn [ctx layer] (sharpen-settings (assoc ctx :layer layer)))
+   :repair (fn [{:keys [tool]} layer] (repair-settings layer tool))
+   :focus (fn [_ layer] (focus-settings layer))
+   :light (fn [_ layer] (light-settings layer))
+   :levels (fn [{:keys [doc tool]} layer] (levels-settings doc layer tool))
+   :curves (fn [{:keys [doc tool]} layer] (curves-settings doc layer tool))
+   :balance (fn [_ layer] (balance-settings layer))
+   :hsl (fn [_ layer] (hsl-settings layer))
+   :selective (fn [_ layer] (selective-settings layer))
+   :bw (fn [_ layer] (bw-settings layer))
+   :vignette (fn [_ layer] (vignette-settings layer))})
+
+(defn- status-text
+  "The layer's processing status (layer-status), nil when it has no row yet."
+  [{:keys [db doc sigs job stale-id]} layer]
+  (when-let [lid (:id layer)]
+    (let [idx (d/layer-index db lid)]
+      (layer-status doc layer (when idx (nth sigs idx)) (when (= lid stale-id) job)))))
+
 (defn- filter-panel
-  [{:keys [db doc tool sigs job stale-id] :as ctx} kind open?]
+  [{:keys [db doc tool] :as ctx} kind open?]
   (let [layer (layer-or-defaults db doc kind)
         lid (:id layer)
-        idx (when lid (d/layer-index db lid))]
+        settings (or (kind-settings kind) (throw (ex-info "no settings panel" {:kind kind})))]
     [:panel {:key kind :text (get-in d/kinds [kind :label]) :collapsed (if open? 0 1)}
      [:checkbox {:header true :label "" :value (if (:enabled layer) 1 0) :enabled (if doc 1 0)
                  :on-change #(act/set-enabled! kind (pos? %))}]
      [:vbox {:spacing 4 :enabled (if doc 1 0)}
       (when-not (d/live? layer)
-        [:label {:key :status
-                 :text (or (when lid (layer-status doc layer (when idx (nth sigs idx)) (when (= lid stale-id) job)))
-                           "Off")}])
+        [:label {:key :status :text (or (status-text ctx layer) "Off")}])
       [:slider {:key :strength :label "Strength" :min 0 :max 100 :integer 1 :value (pct (:opacity layer))
                 :on-change #(act/set-layer! kind :opacity (/ (double %) 100.0))}]
-      (case kind
-        :denoise (denoise-settings layer)
-        :sharpen (sharpen-settings (assoc ctx :layer layer))
-        :repair (repair-settings layer tool)
-        :focus (focus-settings layer)
-        :light (light-settings layer)
-        :levels (levels-settings doc layer tool)
-        :curves (curves-settings doc layer tool)
-        :balance (balance-settings layer)
-        :hsl (hsl-settings layer)
-        :selective (selective-settings layer)
-        :bw (bw-settings layer)
-        :vignette (vignette-settings layer))
+      (settings ctx layer)
       [:hbox {:key :reset :align 1}
        [:button {:text "Reset" :enabled (if lid 1 0) :on-click #(act/reset-kind! kind)}]]
       ;; a repair's mask is the repair itself (its own panel paints it)
@@ -603,17 +625,40 @@
 ;; ---- dimensions ------------------------------------------------------------------
 ;; Lens correction: the camera and lens detected from the metadata (lensfun's
 ;; database, or the corrections the raw file embeds), what to correct.
-(defn- lens-section [{:keys [db doc sigs job stale-id]}]
+(defn- camera-text [exif camera]
+  (cond (nil? exif) "No camera metadata"
+        camera (str "Camera: " (lens/label camera))
+        :else (str "Camera: " (:make exif) " " (:model exif) " (no profile)")))
+
+(defn- lens-method-picker [layer ok]
+  [:hbox {:key :method :spacing 4}
+   [:label {:text "Profile" :weight 0 :reqwidth (px 52)}]
+   [:enum {:items ["Auto" "Lensfun" "Camera"] :weight 1 :enabled ok
+           :value (case (:lens-method layer) :lensfun 1 :embedded 2 0)
+           :on-change #(act/set-param! :lens :lens-method ([:auto :lensfun :embedded] (long %)))}]])
+
+(defn- lens-picker
+  "The detected lens's candidates to choose from, or why there are none."
+  [exif lenses detected layer ok]
+  (let [labels (mapv lens/label lenses)]
+    (cond
+      (seq labels) [:dropdown {:key :lens-pick :items labels :enabled ok
+                               :value (index-of labels (or (:lens-id layer) (some-> detected lens/label)))
+                               :on-change #(act/set-param! :lens :lens-id (nth labels (long %)))}]
+      exif [:label {:key :lens-none :text (str "Lens: " (or (:lens exif) "unknown") " (not in the database)")
+                    :text-color [1 1 1 0.55]}])))
+
+(defn- lens-status [ctx layer photo plan]
+  (if (and photo (nil? plan))
+    "Nothing to correct with for this photo"
+    (str (case (:method plan) :embedded "Camera's own correction. " :lensfun "Lensfun profile. " "")
+         (or (status-text ctx layer) ""))))
+
+(defn- lens-section [{:keys [db doc] :as ctx}]
   (let [layer (layer-or-defaults db doc :lens)
-        lid (:id layer)
-        idx (when lid (d/layer-index db lid))
         exif (when doc (d/exif db (:id doc)))
         {:keys [camera lenses] detected :lens} (when exif (lens/detect exif))
         photo (when (:w doc) (eng/lens-photo db doc))
-        embedded? (boolean (some-> (:embedded photo) lens/sony-valid?))
-        p (when (and (:enabled layer) photo) (eng/lens-plan db doc layer))
-        labels (mapv lens/label lenses)
-        cur (or (:lens-id layer) (some-> detected lens/label))
         ok (if doc 1 0)
         check (fn [k label]
                 [:checkbox {:key k :label label :value (if (get layer k) 1 0) :enabled ok
@@ -622,33 +667,16 @@
      [:hbox {:key :head :spacing 4}
       [:checkbox {:label "Lens correction" :value (if (:enabled layer) 1 0) :enabled ok
                   :on-change #(act/set-enabled! :lens (pos? %))}]]
-     [:label {:key :camera :text-color [1 1 1 0.7]
-              :text (cond (nil? exif) "No camera metadata"
-                          camera (str "Camera: " (lens/label camera))
-                          :else (str "Camera: " (:make exif) " " (:model exif) " (no profile)"))}]
-     (when embedded?
-       [:hbox {:key :method :spacing 4}
-        [:label {:text "Profile" :weight 0 :reqwidth (px 52)}]
-        [:enum {:items ["Auto" "Lensfun" "Camera"] :weight 1 :enabled ok
-                :value (case (:lens-method layer) :lensfun 1 :embedded 2 0)
-                :on-change #(act/set-param! :lens :lens-method ([:auto :lensfun :embedded] (long %)))}]])
-     (if (seq labels)
-       [:dropdown {:key :lens-pick :items labels :enabled ok
-                   :value (index-of labels cur)
-                   :on-change #(act/set-param! :lens :lens-id (nth labels (long %)))}]
-       (when exif
-         [:label {:key :lens-none :text (str "Lens: " (or (:lens exif) "unknown") " (not in the database)")
-                  :text-color [1 1 1 0.55]}]))
+     [:label {:key :camera :text-color [1 1 1 0.7] :text (camera-text exif camera)}]
+     (when (some-> (:embedded photo) lens/sony-valid?) (lens-method-picker layer ok))
+     (lens-picker exif lenses detected layer ok)
      (check :lens-dist "Distortion")
      (check :lens-tca "Chromatic aberration")
      (check :lens-vig "Vignetting")
      (check :lens-fill "Fill the frame")
      (when (:enabled layer)
-       [:label {:key :status :text-color [1 1 1 0.55]
-                :text (cond
-                        (and photo (nil? p)) "Nothing to correct with for this photo"
-                        :else (str (case (:method p) :embedded "Camera's own correction. " :lensfun "Lensfun profile. " "")
-                                   (or (layer-status doc layer (when idx (nth sigs idx)) (when (= lid stale-id) job)) "")))}])]))
+       (let [plan (when photo (eng/lens-plan db doc layer))]
+         [:label {:key :status :text-color [1 1 1 0.55] :text (lens-status ctx layer photo plan)}]))]))
 
 (defn dimensions-page []
   (let [doc (s/current-doc)

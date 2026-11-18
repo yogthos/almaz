@@ -34,8 +34,6 @@
 
 (defn translate [dx dy] [1.0 0.0 (double dx) 0.0 1.0 (double dy)])
 
-(defn scale-xf [s] [(double s) 0.0 0.0 0.0 (double s) 0.0])
-
 (defn xf-rect
   "The bounding rect of `rect` mapped through `xf`."
   [xf [x y w h]]
@@ -102,8 +100,6 @@
   [doc editing?]
   (let [[x y w h] (shown-rect doc editing?)]
     (compose (translate x y) (invert (orient-xf (or (:orient doc) 0) w h)))))
-
-(defn source->display [doc editing?] (invert (display->source doc editing?)))
 
 (defn display-crop
   "The crop as the crop editor shows it: in oriented whole-image coordinates."

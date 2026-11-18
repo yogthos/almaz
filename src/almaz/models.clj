@@ -135,8 +135,3 @@
                         (load-session id))]
               (swap! sessions assoc id s)
               s)))))
-
-(defn free-all! []
-  (doseq [{:keys [backend session]} (vals @sessions)]
-    (p/free-session backend session))
-  (reset! sessions {}))

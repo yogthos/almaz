@@ -26,8 +26,3 @@
      {:name :ptr :count}; the outputs are written in place. Returns nil.")
   (free-session [this session]
     "Release the session and any buffers it owns."))
-
-(defn make-tensor
-  "Small helper: a tensor from a name, [h w c] shape and a flat f32 data vector."
-  [name shape data]
-  {:name name :shape shape :dtype :f32 :data data})
