@@ -379,7 +379,7 @@
 
 (defn- hermite
   "The cubic Hermite through points i and i+1 (tangents m) at x, in 0..1."
-  [xs ys m i x]
+  [{:keys [xs ys m]} i x]
   (let [h (- (xs (inc i)) (xs i))
         t (/ (- x (xs i)) h) t2 (* t t) t3 (* t2 t)]
     (clamp01 (+ (* (+ (* 2 t3) (* -3 t2) 1) (ys i))
@@ -398,7 +398,7 @@
       (cond
         (<= x x0) (ys 0)
         (>= x xn) (ys (dec n))
-        :else (hermite xs ys m (segment-at xs x) x)))))
+        :else (hermite {:xs xs :ys ys :m m} (segment-at xs x) x)))))
 
 (def ^:private min-gap "Closest two points may get in x." 0.01)
 

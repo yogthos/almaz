@@ -171,7 +171,7 @@
 (defn- locked-size
   "The dragged size [w h] at aspect `a`: an edge sets its own dimension, a
    corner whichever gives the larger crop."
-  [sx sy w1 h1 a]
+  [[sx sy] [w1 h1] a]
   (cond (zero? sy) [w1 (/ w1 a)]
         (zero? sx) [(* h1 a) h1]
         (>= (/ w1 a) h1) [w1 (/ w1 a)]
@@ -183,7 +183,7 @@
   [[x y w h] handle [dx dy] [bw bh] a]
   (let [[ml mt mr mb] (moves handle)
         sx (side-sign ml mr) sy (side-sign mt mb)
-        [w1 h1] (locked-size sx sy (max min-crop (+ w (* sx dx))) (max min-crop (+ h (* sy dy))) a)
+        [w1 h1] (locked-size [sx sy] [(max min-crop (+ w (* sx dx))) (max min-crop (+ h (* sy dy)))] a)
         ax (anchor sx x w) ay (anchor sy y h)
         k (min 1.0 (/ (room sx ax bw) w1) (/ (room sy ay bh) h1))
         w1 (* k w1) h1 (* k h1)]

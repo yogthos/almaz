@@ -499,7 +499,7 @@
 
 (defn- curve-press
   "Grab the point near [cx cy], or add one there and grab that."
-  [pts cx cy hit put!]
+  [pts [cx cy] hit put!]
   (let [step (swap! curve-steps inc)]
     (if-let [i (c/point-near pts cx cy hit)]
       (reset! curve-drag {:i i :step step})
@@ -512,7 +512,7 @@
   [{:keys [doc layer ch pts]} {:keys [->x ->y hit]}]
   (let [put! (fn [pts' step] (act/set-curve! ch pts' step))
         current #(curve-points (or (d/layer-of @s/db* (:id doc) :curves) layer) ch)]
-    {:on-press (fn [x y] (curve-press pts (->x x) (->y y) hit put!))
+    {:on-press (fn [x y] (curve-press pts [(->x x) (->y y)] hit put!))
      :on-motion (fn [x y]
                   (when-let [{:keys [i step]} @curve-drag]
                     (let [cur (current)]

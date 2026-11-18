@@ -114,7 +114,7 @@
 
 (defn- check-predict
   "Run a backend shim's predict over the marshaled arrays; throw when it fails."
-  [ar {:keys [predict free-string backend]} handle [n-in in-arr n-out out-arr] message]
+  [ar {:keys [predict free-string backend]} [handle n-in in-arr n-out out-arr] message]
   (call-checked ar #(predict handle n-in in-arr n-out out-arr %)
                 {:failed? (complement zero?) :free-string free-string
                  :message message :data {:backend backend}}))
@@ -127,16 +127,16 @@
   (let [in-entries (mapv (fn [n] (select-keys (tensors n) [:name :shape :data])) inputs)
         out-count (count (:data (tensors (first inputs))))]  ; v1: same-size I/O
     (with-open [ar (ffi/confined-arena)]
-      (let [arrays [(count inputs) (write-tensor-array! ar in-entries)
-                    (count outputs) (alloc-output-array! ar outputs out-count)]]
-        (check-predict ar shim handle arrays (str (name (:backend shim)) " predict failed"))
-        (read-output-array! (arrays 3) outputs)))))
+      (let [out-arr (alloc-output-array! ar outputs out-count)]
+        (check-predict ar shim [handle (count inputs) (write-tensor-array! ar in-entries) (count outputs) out-arr]
+                       (str (name (:backend shim)) " predict failed"))
+        (read-output-array! out-arr outputs)))))
 
 (defn run-native
   "A backend's run-native: caller-owned buffers in and out, nothing copied."
   [shim {:keys [handle]} inputs outputs]
   (with-open [ar (ffi/confined-arena)]
-    (check-predict ar shim handle [(count inputs) (native-tensor-array! ar inputs)
-                                   (count outputs) (native-tensor-array! ar outputs)]
+    (check-predict ar shim [handle (count inputs) (native-tensor-array! ar inputs)
+                            (count outputs) (native-tensor-array! ar outputs)]
                    "predict failed")
     nil))
