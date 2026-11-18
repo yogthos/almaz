@@ -75,6 +75,9 @@ jobs:
           LIBRAW_DIR=~/deps/libraw native/raw/build.sh
           ONNXRUNTIME_INC=~/deps/onnxruntime/include ONNXRUNTIME_LIB=~/deps/onnxruntime/lib native/onnxruntime/build.sh
 
+      - name: Native allocation-failure tests
+        run: native/img/test/run.sh
+
       - name: RAW samples
         run: native/tools/fetch_samples.sh
 
@@ -87,3 +90,45 @@ jobs:
         env:
           LD_LIBRARY_PATH: /home/runner/deps/bui/lib:/home/runner/deps/onnxruntime/lib
         run: jolt -M:check
+
+  # Code metrics: no critical findings, and nothing new beyond the issues
+  # .jolt-metrics-baseline.edn lists (see test/almaz/metrics_gate.clj). Git
+  # history is left out (--no-git) so a shallow checkout judges the same as a
+  # full one.
+  metrics:
+    runs-on: ubuntu-24.04
+    env:
+      JOLT_VERSION: v0.8.25
+      JOLT_METRICS_VERSION: v0.5.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jolt and jolt-metrics
+        run: |
+          curl -fsSL "https://github.com/jolt-lang/jolt/releases/download/${JOLT_VERSION}/jolt-${JOLT_VERSION}-x86_64-linux.tar.gz" | tar xz -C "$HOME"
+          echo "$HOME/jolt-${JOLT_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
+          curl -fsSL "https://github.com/jlt-commons/jolt-metrics/releases/download/${JOLT_METRICS_VERSION}/jolt-metrics-${JOLT_METRICS_VERSION}-x86_64-linux.tar.gz" | tar xz -C "$HOME"
+          echo "$HOME/jolt-metrics-${JOLT_METRICS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
+
+      - name: Cache jolt deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: metrics-${{ env.JOLT_VERSION }}-${{ hashFiles('deps.edn') }}
+
+      - name: Report
+        run: |
+          jolt-metrics . metrics.json --no-git
+          jolt-metrics . metrics.md --no-git
+
+      - name: Gate
+        run: jolt -M:metrics metrics.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-report
+          path: |
+            metrics.json
+            metrics.md

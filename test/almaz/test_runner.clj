@@ -4,7 +4,7 @@
    exported (README). Exits non-zero on any failure, error or load error."
   (:require [clojure.test :as t]))
 
-(def pure '[almaz.lens-test almaz.tile-test almaz.view-test almaz.strip-test almaz.doc-test almaz.autopilot-test almaz.geom-test almaz.color-test almaz.history-test
+(def pure '[almaz.metrics-gate-test almaz.lens-test almaz.tile-test almaz.view-test almaz.strip-test almaz.doc-test almaz.autopilot-test almaz.geom-test almaz.color-test almaz.history-test
             almaz.ep-test almaz.export-test almaz.keys-test almaz.files-test])
 
 (def native '[almaz.segment-test almaz.download-test almaz.pixels-test almaz.raw-test almaz.ort-test almaz.coreml-test
