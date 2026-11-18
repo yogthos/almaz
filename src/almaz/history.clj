@@ -12,6 +12,7 @@
    A history is {:undo [entries, oldest first] :redo [entries]}, at most
    `limit` deep. Edits with the same non-nil :key within `merge-ms` of the
    last entry are one step (a slider drag is many edits)."
+  (:refer-clojure :exclude [empty])
   (:require [almaz.doc :as d]))
 
 (def empty {:undo [] :redo []})

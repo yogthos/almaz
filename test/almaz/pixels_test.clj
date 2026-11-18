@@ -741,3 +741,9 @@
                                            :xf [2.0 0.0 0.0 0.0 2.0 0.0]})]
         (is (< half (* 0.6 full)))))
     (px/free-image! img)))
+
+(deftest allocation-failure
+  (testing "an image or mask too big to allocate throws instead of handing back NULL"
+    (let [huge 1073741824]
+      (is (thrown-with-msg? Exception #"out of memory" (px/new-image huge huge)))
+      (is (thrown-with-msg? Exception #"out of memory" (px/new-mask huge huge 1 0.0))))))
