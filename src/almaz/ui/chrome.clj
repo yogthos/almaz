@@ -10,9 +10,8 @@
             [glimmer.ratom :as r]
             [almaz.ui.shortcuts :as sc]
             [almaz.ui.units :refer [px]]
+            [almaz.version :refer [version]]
             [almaz.view :as v]))
-
-(def version "0.2.0")
 
 (defn top-bar []
   (let [doc (s/current-doc)
