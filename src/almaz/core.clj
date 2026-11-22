@@ -46,7 +46,11 @@
   (drop/install! act/open-images!)
   (dev-script!)
   (act/add-images! (if (seq files) files (filter #(.exists (java.io.File. %)) ["DSC_9852.NEF"])))
-  (ui/run app :title "Almaz" :width 1500 :height 960))
+  (ui/run app :title "Almaz" :width 1500 :height 960)
+  ;; The window is closed: end now. Returning from main would wait out the
+  ;; non-daemon future pool (color/build-cube's workers idle for 60s), leaving
+  ;; a dead window that macOS reports as hung.
+  (System/exit 0))
 
 (defn -main
   "With options, batch-process the files (almaz --help); otherwise open them
